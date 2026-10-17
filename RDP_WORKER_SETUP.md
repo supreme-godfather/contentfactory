@@ -11,28 +11,31 @@ Add a random `WORKER_TOKEN` to the Railway service. Use a different value from
 
 ## Windows setup
 
-Install Python and FFmpeg on the RDP using their official installers. Then copy
-the `worker` directory to the machine and run:
+Install Python 3.11+ on the RDP using the official python.org installer and
+enable the Python Launcher. Copy the `worker` directory to the machine, open
+PowerShell as Administrator in that directory, and run:
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install httpx==0.28.1
-$env:FACTORY_URL="https://factory-api-production-2fae.up.railway.app"
-$env:WORKER_TOKEN="<the same private Railway variable>"
-.\.venv\Scripts\python.exe .\worker.py
+Set-ExecutionPolicy -Scope Process Bypass
+.\install-rdp-worker.ps1
 ```
 
-Do not put the worker token in a committed file or send it in chat.
+The installer asks for the worker token locally, stores it in an ACL-protected
+`C:\ProgramData\HindiContentFactory\worker-token.txt`, installs the pinned
+HTTP client, and creates a SYSTEM startup task. The token is not sent to
+Railway in a command line or committed file.
 
 ## Always-on operation
 
-Use Windows Task Scheduler with:
+The installer creates the Windows Task Scheduler entry automatically:
 
+- Task: `Hindi Content Factory Worker`
 - Trigger: At startup
-- Run whether user is logged on or not
+- Account: SYSTEM
 - Restart on failure
-- Action: the venv Python executable and `worker.py`
 - No inbound firewall rule
 
-The worker only claims queued rendering jobs. It does not receive Telegram,
-YouTube, Instagram, or database credentials.
+The current worker produces a render manifest, not a finished MP4. It only
+claims queued rendering jobs and does not receive Telegram, YouTube, Instagram,
+or database credentials. FFmpeg/TTS rendering will replace the manifest stage
+before real publishing is enabled.
