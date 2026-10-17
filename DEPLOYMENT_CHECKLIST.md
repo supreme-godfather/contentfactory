@@ -30,7 +30,7 @@ APP_PAUSED=true
 MOCK_PUBLISHING=true
 YOUTUBE_ENABLED=false
 INSTAGRAM_ENABLED=false
-PUBLIC_BASE_URL=https://supremejaat.pro
+PUBLIC_BASE_URL=https://factory-api-production-2fae.up.railway.app
 TELEGRAM_BOT_USERNAME=devilmoneyprinter_bot
 TELEGRAM_OWNER_IDS=1112018699
 TELEGRAM_LANGUAGE=bilingual
@@ -46,18 +46,18 @@ DATABASE_URL=<Railway reference to the PostgreSQL URL>
 Keep `MOCK_PUBLISHING=true` until the health checks and Telegram webhook have
 been tested. Do not enable YouTube or Instagram yet.
 
-## Domain
+## Optional custom domain
 
-Attach `supremejaat.pro` to the `factory-api` service in Railway and follow
-Railway's DNS instructions. Do not expose PostgreSQL or an administration
-panel through the domain.
+`supremejaat.pro` is not required. The Railway-generated HTTPS URL is enough
+for the Telegram webhook. Only attach the custom domain if you want a branded
+endpoint later. The app still exposes no dashboard and no public admin API.
 
 ## Telegram webhook
 
 After the service is healthy, the application will receive updates at:
 
 ```text
-https://supremejaat.pro/telegram/webhook
+https://factory-api-production-2fae.up.railway.app/telegram/webhook
 ```
 
 The webhook must be registered with Telegram using the bot token and secret

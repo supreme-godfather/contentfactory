@@ -17,7 +17,7 @@ the `worker` directory to the machine and run:
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install httpx==0.28.1
-$env:FACTORY_URL="https://supremejaat.pro"
+$env:FACTORY_URL="https://factory-api-production-2fae.up.railway.app"
 $env:WORKER_TOKEN="<the same private Railway variable>"
 .\.venv\Scripts\python.exe .\worker.py
 ```

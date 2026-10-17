@@ -14,7 +14,7 @@ Instagram credentials are added.
    `YOUTUBE_ENABLED=false`, and `INSTAGRAM_ENABLED=false`.
 3. Install the pinned dependencies in an isolated virtual environment.
 4. Start with `uvicorn app.main:app --host 127.0.0.1 --port 8000`.
-5. Check `GET /health` and `GET /api/status`.
+5. Check `GET /health`; authenticated operators can check `GET /api/status`.
 
 For Railway, deploy this folder with the Railway CLI:
 

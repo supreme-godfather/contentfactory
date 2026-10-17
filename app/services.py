@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from hashlib import sha256
 
@@ -21,6 +22,41 @@ def create_job(topic: str, platform: str, brand: str = "learn_with_elite_explain
             return existing
         job = ContentJob(topic=clean_topic, platform=platform, brand=brand, idempotency_key=key)
         session.add(job)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def generate_content(job_id: str) -> ContentJob:
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.status not in {"queued", "rendering"}:
+            raise ValueError("Job is not available for content generation")
+        job.script_text = (
+            f"क्या आपने कभी सोचा है कि {job.topic} के पीछे असली कहानी क्या है?\n\n"
+            f"इस वीडियो में हम {job.topic} को आसान हिंदी में समझेंगे। "
+            "मुख्य तथ्यों, प्रभाव और सीख को संक्षेप में देखिए।\n\n"
+            "ऐसी जानकारी के लिए YouTube पर Learn With Elite Explainer को subscribe "
+            "और Instagram पर sheoran_studios को follow करें।"
+        )
+        job.metadata_json = json.dumps(
+            {
+                "title": f"{job.topic} की असली कहानी | आसान हिंदी में",
+                "description": (
+                    f"{job.topic} को आसान हिंदी में समझिए।\n\n"
+                    "YouTube: @LEARNWITHELITEEXPLAINER\n"
+                    "Instagram: @sheoran_studios"
+                ),
+                "hashtags": ["#Hindi", "#Explainer", "#LearnWithEliteExplainer"],
+                "disclosure": "AI-assisted production; facts require source verification.",
+            },
+            ensure_ascii=False,
+        )
+        job.stage = "quality_check"
+        job.status = "awaiting_approval"
+        job.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(job)
         return job
@@ -108,6 +144,22 @@ def claim_render_job() -> ContentJob | None:
         if job is None:
             return None
         job.status = "rendering"
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def complete_render_job(job_id: str, worker_id: str, render_path: str) -> ContentJob:
+    if not render_path or len(render_path) > 500:
+        raise ValueError("Invalid render path")
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job or job.status != "rendering":
+            raise ValueError("Job is not currently rendering")
+        job.render_path = render_path
+        job.stage = "quality_check"
+        job.status = "awaiting_approval"
         job.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(job)

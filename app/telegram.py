@@ -4,7 +4,7 @@ import httpx
 
 from .config import get_settings
 from .security import require_owner
-from .services import approve_job, create_job, is_paused, list_jobs, publish_job, set_paused
+from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, set_paused
 
 
 def _button(text: str, callback_data: str) -> dict[str, str]:
@@ -93,7 +93,8 @@ async def handle_update(update: dict[str, Any]) -> None:
         await send_message(chat_id, "\n".join(f"{job.id[:8]} · {job.status} · {job.topic}" for job in jobs) or "Queue is empty.", _keyboard())
     elif text.startswith("/generate "):
         job = create_job(text[10:], "both")
-        await send_message(chat_id, f"Queued job {job.id} for approval workflow.\nTopic: {job.topic}", _job_keyboard(job.id))
+        job = generate_content(job.id)
+        await send_message(chat_id, f"Created preview job {job.id} for approval.\nTopic: {job.topic}", _job_keyboard(job.id))
     elif text.startswith("/approve "):
         job_id = text[9:].strip()
         job = approve_job(job_id, user_id)

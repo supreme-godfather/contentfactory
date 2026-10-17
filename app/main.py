@@ -1,12 +1,12 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .config import get_settings
 from .db import init_db
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
-from .services import approve_job, claim_render_job, create_job, is_paused, list_jobs, publish_job, worker_heartbeat
+from .services import approve_job, claim_render_job, complete_render_job, create_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
 from .telegram import handle_update
 
 
@@ -31,7 +31,7 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/status")
-def status() -> dict[str, object]:
+def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
     settings = get_settings()
     return {
         "paused": is_paused(),
@@ -43,7 +43,7 @@ def status() -> dict[str, object]:
 
 
 @app.get("/api/jobs")
-def jobs() -> list[dict[str, object]]:
+def jobs(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
     return [
         {
             "id": job.id,
@@ -53,18 +53,28 @@ def jobs() -> list[dict[str, object]]:
             "status": job.status,
             "content_version": job.content_version,
             "approval_version": job.approval_version,
+            "stage": job.stage,
         }
         for job in list_jobs()
     ]
 
 
 @app.post("/api/jobs")
-def generate(request: GenerateRequest) -> dict[str, object]:
+def generate(request: GenerateRequest, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
     try:
         job = create_job(request.topic, request.platform, request.brand)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "topic": job.topic}
+
+
+@app.post("/api/jobs/{job_id}/generate-content")
+def generate_job_content(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    try:
+        job = generate_content(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "stage": job.stage}
 
 
 @app.post("/api/jobs/{job_id}/approve")
@@ -105,3 +115,12 @@ def worker_claim(_: None = Depends(require_worker_token)) -> dict[str, object]:
     if job is None:
         return {"job": None, "reason": "queue_empty"}
     return {"job": {"id": job.id, "topic": job.topic, "brand": job.brand, "platform": job.platform}}
+
+
+@app.post("/api/worker/{job_id}/complete")
+def worker_complete(job_id: str, render_path: str, _: None = Depends(require_worker_token)) -> dict[str, object]:
+    try:
+        job = complete_render_job(job_id, "worker", render_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "stage": job.stage}
