@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from typing import Any
 
 import httpx
@@ -64,11 +65,19 @@ async def configure_webhook() -> None:
     if settings.telegram_webhook_secret:
         payload["secret_token"] = settings.telegram_webhook_secret
     async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            response = await client.post(url, data=payload)
-            response.raise_for_status()
-        except httpx.HTTPError:
-            logger.exception("Telegram webhook registration failed")
+        for attempt in range(1, 6):
+            try:
+                response = await client.post(url, data=payload)
+                response.raise_for_status()
+                logger.info("Telegram webhook registered")
+                return
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text[:300]
+                logger.warning("Telegram webhook attempt %s failed: %s", attempt, detail)
+            except httpx.HTTPError:
+                logger.exception("Telegram webhook attempt %s failed", attempt)
+            if attempt < 5:
+                await asyncio.sleep(attempt * 5)
 
 
 async def handle_update(update: dict[str, Any]) -> None:

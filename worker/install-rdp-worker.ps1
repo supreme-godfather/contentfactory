@@ -4,6 +4,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+trap {
+    Write-Host ""
+    Write-Host "INSTALLATION FAILED:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Read-Host "Press Enter to close"
+    exit 1
+}
 $installRoot = "C:\ProgramData\HindiContentFactory"
 $workerPath = Join-Path $installRoot "worker.py"
 $tokenPath = Join-Path $installRoot "worker-token.txt"
@@ -64,8 +71,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to create the Windows startup task. schtasks exit code: $LASTEXITCODE"
 }
 & schtasks.exe /Run /TN $taskName | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "The worker task was created but could not be started. schtasks exit code: $LASTEXITCODE"
+}
 
 Write-Host "Installed and started: $taskName"
 Write-Host "Factory URL: $FactoryUrl"
 Write-Host "Worker files: $installRoot"
 Write-Host "The worker uses outbound HTTPS only; no inbound port was opened."
+Read-Host "Installation complete. Press Enter to close"
