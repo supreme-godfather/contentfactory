@@ -4,6 +4,7 @@ import httpx
 
 from .config import get_settings
 from .security import require_owner
+from .discovery import analytics_summary, list_trends
 from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, set_paused
 
 
@@ -15,6 +16,7 @@ def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
     return {
         "inline_keyboard": [
             [_button("📊 Status", "status"), _button("📥 Queue", "queue")],
+            [_button("🔥 Trends", "trends"), _button("📈 Analytics", "analytics")],
             [_button("⏸ Pause", "pause"), _button("▶ Resume", "resume")],
             [_button("❓ Help", "help")],
         ]
@@ -70,6 +72,17 @@ async def handle_update(update: dict[str, Any]) -> None:
             jobs = list_jobs()
             lines = [f"{job.id[:8]} · {job.status} · {job.platform} · {job.topic}" for job in jobs]
             await send_message(chat_id, "\n".join(lines) if lines else "Queue is empty.")
+        elif data == "trends":
+            items = list_trends()
+            lines = [f"{item.total_score}/100 · {item.topic} · {item.source}" for item in items]
+            await send_message(chat_id, "\n".join(lines) if lines else "No trend candidates yet.", _keyboard())
+        elif data == "analytics":
+            items = analytics_summary()
+            lines = [
+                f"{item['platform']} · {item['content_id']} · {item['views']} views · {item['engagement_rate']}%"
+                for item in items
+            ]
+            await send_message(chat_id, "\n".join(lines) if lines else "No analytics snapshots yet.", _keyboard())
         elif data.startswith("approve:"):
             job = approve_job(data.split(":", 1)[1], user_id)
             await send_message(chat_id, f"✅ Approved {job.id}.", _job_keyboard(job.id))
@@ -84,13 +97,19 @@ async def handle_update(update: dict[str, Any]) -> None:
     if text == "/start":
         await send_message(chat_id, "Hindi Content Factory is ready and paused.", _keyboard())
     elif text == "/help":
-        await send_message(chat_id, "/status, /queue, /generate <topic>, /approve <job-id>, /publish <job-id>, /pause, /resume", _keyboard())
+        await send_message(chat_id, "/status, /queue, /trends, /analytics, /generate <topic>, /approve <job-id>, /publish <job-id>, /pause, /resume", _keyboard())
     elif text == "/status":
         settings = get_settings()
         await send_message(chat_id, f"Paused: {is_paused()}\nMock publishing: {settings.mock_publishing}\nDaily limit: {settings.max_daily_publications}", _keyboard())
     elif text == "/queue":
         jobs = list_jobs()
         await send_message(chat_id, "\n".join(f"{job.id[:8]} · {job.status} · {job.topic}" for job in jobs) or "Queue is empty.", _keyboard())
+    elif text == "/trends":
+        items = list_trends()
+        await send_message(chat_id, "\n".join(f"{item.total_score}/100 · {item.topic}" for item in items) or "No trend candidates yet.", _keyboard())
+    elif text == "/analytics":
+        items = analytics_summary()
+        await send_message(chat_id, "\n".join(f"{item['platform']} · {item['views']} views · {item['engagement_rate']}%" for item in items) or "No analytics snapshots yet.", _keyboard())
     elif text.startswith("/generate "):
         job = create_job(text[10:], "both")
         job = generate_content(job.id)

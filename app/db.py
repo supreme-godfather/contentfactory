@@ -57,6 +57,38 @@ class BrandProfile(Base):
     enabled: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class TrendCandidate(Base):
+    __tablename__ = "trend_candidates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    topic: Mapped[str] = mapped_column(String(240), index=True)
+    source: Mapped[str] = mapped_column(String(80), default="manual")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    region: Mapped[str] = mapped_column(String(20), default="IN")
+    freshness_score: Mapped[int] = mapped_column(Integer, default=0)
+    relevance_score: Mapped[int] = mapped_column(Integer, default=0)
+    originality_score: Mapped[int] = mapped_column(Integer, default=100)
+    risk_score: Mapped[int] = mapped_column(Integer, default=0)
+    total_score: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="candidate", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AnalyticsSnapshot(Base):
+    __tablename__ = "analytics_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    platform: Mapped[str] = mapped_column(String(30), index=True)
+    account: Mapped[str] = mapped_column(String(120))
+    content_id: Mapped[str] = mapped_column(String(160), index=True)
+    views: Mapped[int] = mapped_column(Integer, default=0)
+    likes: Mapped[int] = mapped_column(Integer, default=0)
+    comments: Mapped[int] = mapped_column(Integer, default=0)
+    shares: Mapped[int] = mapped_column(Integer, default=0)
+    watch_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 settings = get_settings()
 if settings.database_url.startswith("sqlite:///"):
     Path("data").mkdir(exist_ok=True)

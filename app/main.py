@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from .config import get_settings
 from .db import init_db
+from .discovery import add_analytics_snapshot, add_trend, analytics_summary, list_trends
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
 from .services import approve_job, claim_render_job, complete_render_job, create_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
 from .telegram import handle_update
@@ -23,6 +24,16 @@ class GenerateRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
     platform: str = Field(default="both", pattern="^(youtube|instagram|both)$")
     brand: str = Field(default="learn_with_elite_explainer", max_length=80)
+
+
+class TrendRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=240)
+    source: str = Field(default="manual", max_length=80)
+    source_url: str | None = Field(default=None, max_length=500)
+    freshness: int = Field(default=50, ge=0, le=100)
+    relevance: int = Field(default=50, ge=0, le=100)
+    originality: int = Field(default=100, ge=0, le=100)
+    risk: int = Field(default=0, ge=0, le=100)
 
 
 @app.get("/health")
@@ -75,6 +86,42 @@ def generate_job_content(job_id: str, _: None = Depends(require_admin_api_token)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+@app.get("/api/trends")
+def trends(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    return [
+        {
+            "id": item.id,
+            "topic": item.topic,
+            "source": item.source,
+            "score": item.total_score,
+            "status": item.status,
+        }
+        for item in list_trends()
+    ]
+
+
+@app.post("/api/trends")
+def add_trend_candidate(request: TrendRequest, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    try:
+        item = add_trend(
+            request.topic,
+            request.source,
+            request.source_url,
+            request.freshness,
+            request.relevance,
+            request.originality,
+            request.risk,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"id": item.id, "topic": item.topic, "score": item.total_score}
+
+
+@app.get("/api/analytics")
+def analytics(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    return analytics_summary()
 
 
 @app.post("/api/jobs/{job_id}/approve")
