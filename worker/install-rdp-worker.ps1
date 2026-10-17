@@ -34,6 +34,13 @@ New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 Copy-Item -LiteralPath $sourceWorker -Destination $workerPath -Force
 Copy-Item -LiteralPath $sourceRequirements -Destination (Join-Path $installRoot "requirements.txt") -Force
 
+# A previous installation protects this file from overwrite. Reset only this
+# known installation file so the installer can be safely rerun by an admin.
+if (Test-Path -LiteralPath $tokenPath) {
+    & takeown.exe /F $tokenPath /A | Out-Null
+    & icacls.exe $tokenPath /reset /C | Out-Null
+    & icacls.exe $tokenPath /grant:r "BUILTIN\Administrators:(F)" /C | Out-Null
+}
 Set-Content -LiteralPath $tokenPath -Value $token -NoNewline -Encoding utf8
 $acl = Get-Acl $tokenPath
 $acl.SetAccessRuleProtection($true, $false)
@@ -41,7 +48,7 @@ $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
     "SYSTEM", "Read", "Allow")
 $acl.SetAccessRule($rule)
 $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "BUILTIN\Administrators", "Read", "Allow")
+    "BUILTIN\Administrators", "FullControl", "Allow")
 $acl.SetAccessRule($adminRule)
 Set-Acl -LiteralPath $tokenPath -AclObject $acl
 Remove-Variable token
