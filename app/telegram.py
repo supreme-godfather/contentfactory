@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import httpx
@@ -6,6 +7,8 @@ from .config import get_settings
 from .security import require_owner
 from .discovery import analytics_summary, list_trends
 from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, set_paused
+
+logger = logging.getLogger(__name__)
 
 
 def _button(text: str, callback_data: str) -> dict[str, str]:
@@ -47,6 +50,25 @@ async def send_message(chat_id: int, text: str, reply_markup: dict[str, Any] | N
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(url, json=_message(chat_id, text, reply_markup))
         response.raise_for_status()
+
+
+async def configure_webhook() -> None:
+    settings = get_settings()
+    if not settings.telegram_bot_token or not settings.public_base_url:
+        return
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/setWebhook"
+    payload: dict[str, str] = {
+        "url": f"{settings.public_base_url.rstrip('/')}/telegram/webhook",
+        "drop_pending_updates": "false",
+    }
+    if settings.telegram_webhook_secret:
+        payload["secret_token"] = settings.telegram_webhook_secret
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            response = await client.post(url, data=payload)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("Telegram webhook registration failed")
 
 
 async def handle_update(update: dict[str, Any]) -> None:

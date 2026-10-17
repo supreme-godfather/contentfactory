@@ -11,3 +11,4 @@ data/
 *.sqlite3
 secrets/
 worker-token.txt
+worker-package.zip

@@ -9,12 +9,13 @@ from .discovery import add_analytics_snapshot, add_trend, analytics_summary, lis
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
 from .services import approve_job, claim_render_job, complete_render_job, create_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
-from .telegram import handle_update
+from .telegram import configure_webhook, handle_update
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    await configure_webhook()
     yield
 
 
