@@ -51,14 +51,12 @@ if (-not (Test-Path (Join-Path $venvPath "Scripts\python.exe"))) {
 }
 & (Join-Path $venvPath "Scripts\python.exe") -m pip install --disable-pip-version-check -r (Join-Path $installRoot "requirements.txt")
 
-$action = New-ScheduledTaskAction `
-    -Execute (Join-Path $venvPath "Scripts\python.exe") `
-    -Argument "`"$workerPath`" --url `"$FactoryUrl`" --token-file `"$tokenPath`" --poll-seconds $PollSeconds --output-dir `"$installRoot\media`""
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-Start-ScheduledTask -TaskName $taskName
+$taskCommand = "`"$workerPath`" --url `"$FactoryUrl`" --token-file `"$tokenPath`" --poll-seconds $PollSeconds --output-dir `"$installRoot\media`""
+& schtasks.exe /Create /TN $taskName /TR "`"$($venvPath)\Scripts\python.exe`" $taskCommand" /SC ONSTART /RU SYSTEM /RL HIGHEST /F | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to create the Windows startup task. schtasks exit code: $LASTEXITCODE"
+}
+& schtasks.exe /Run /TN $taskName | Out-Host
 
 Write-Host "Installed and started: $taskName"
 Write-Host "Factory URL: $FactoryUrl"
