@@ -15,6 +15,7 @@ $installRoot = Join-Path $env:LOCALAPPDATA "HindiContentFactory"
 $workerPath = Join-Path $installRoot "worker.py"
 $tokenPath = Join-Path $installRoot "worker-token.txt"
 $venvPath = Join-Path $installRoot ".venv"
+$launcherPath = Join-Path $installRoot "run-worker.cmd"
 $taskName = "Hindi Content Factory Worker (User)"
 $sourceWorker = Join-Path $PSScriptRoot "worker.py"
 $sourceRequirements = Join-Path $PSScriptRoot "requirements.txt"
@@ -44,8 +45,14 @@ if (-not (Test-Path (Join-Path $venvPath "Scripts\python.exe"))) {
 }
 & (Join-Path $venvPath "Scripts\python.exe") -m pip install --disable-pip-version-check -r (Join-Path $installRoot "requirements.txt")
 
-$taskCommand = "`"$($venvPath)\Scripts\python.exe`" `"$workerPath`" --url `"$FactoryUrl`" --token-file `"$tokenPath`" --poll-seconds $PollSeconds --output-dir `"$installRoot\media`""
-& schtasks.exe /Create /TN $taskName /TR $taskCommand /SC ONLOGON /F | Out-Host
+$launcherContent = @"
+@echo off
+"$($venvPath)\Scripts\python.exe" "$workerPath" --url "$FactoryUrl" --token-file "$tokenPath" --poll-seconds $PollSeconds --output-dir "$installRoot\media"
+"@
+Set-Content -LiteralPath $launcherPath -Value $launcherContent -Encoding ascii
+
+# schtasks limits /TR to 261 characters; the launcher keeps the task command short.
+& schtasks.exe /Create /TN $taskName /TR "`"$launcherPath`"" /SC ONLOGON /F | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to create the Windows startup task. schtasks exit code: $LASTEXITCODE"
 }
