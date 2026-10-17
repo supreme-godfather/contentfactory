@@ -16,7 +16,8 @@ $workerPath = Join-Path $installRoot "worker.py"
 $tokenPath = Join-Path $installRoot "worker-token.txt"
 $venvPath = Join-Path $installRoot ".venv"
 $launcherPath = Join-Path $installRoot "run-worker.cmd"
-$taskName = "Hindi Content Factory Worker (User)"
+$startupPath = [Environment]::GetFolderPath("Startup")
+$startupShortcut = Join-Path $startupPath "Hindi Content Factory Worker.lnk"
 $sourceWorker = Join-Path $PSScriptRoot "worker.py"
 $sourceRequirements = Join-Path $PSScriptRoot "requirements.txt"
 
@@ -51,18 +52,18 @@ $launcherContent = @"
 "@
 Set-Content -LiteralPath $launcherPath -Value $launcherContent -Encoding ascii
 
-# schtasks limits /TR to 261 characters; the launcher keeps the task command short.
-& schtasks.exe /Create /TN $taskName /TR "`"$launcherPath`"" /SC ONLOGON /F | Out-Host
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to create the Windows startup task. schtasks exit code: $LASTEXITCODE"
-}
-& schtasks.exe /Run /TN $taskName | Out-Host
-if ($LASTEXITCODE -ne 0) {
-    throw "The worker task was created but could not be started. schtasks exit code: $LASTEXITCODE"
-}
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($startupShortcut)
+$shortcut.TargetPath = $launcherPath
+$shortcut.WorkingDirectory = $installRoot
+$shortcut.WindowStyle = 7
+$shortcut.Save()
 
-Write-Host "Installed and started: $taskName"
+Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot -WindowStyle Minimized
+
+Write-Host "Installed and started the user Startup worker."
 Write-Host "Factory URL: $FactoryUrl"
 Write-Host "Worker files: $installRoot"
 Write-Host "The worker uses outbound HTTPS only; no inbound port was opened."
+Write-Host "Startup shortcut: $startupShortcut"
 Read-Host "Installation complete. Press Enter to close"
