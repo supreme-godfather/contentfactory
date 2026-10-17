@@ -5,7 +5,9 @@ from hashlib import sha256
 from sqlalchemy import select
 
 from .config import get_settings
-from .db import ContentJob, FactorySetting, SessionLocal, WorkerLease
+from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, WorkerLease
+from .publishers import get_publisher
+from .quality import validate_content
 
 
 def create_job(topic: str, platform: str, brand: str = "learn_with_elite_explainer") -> ContentJob:
@@ -92,8 +94,35 @@ def publish_job(job_id: str) -> ContentJob:
             raise ValueError("Factory is paused")
         if job.status != "approved" or job.approval_version != job.content_version:
             raise ValueError("Job requires approval for its current content version")
-        if not settings.mock_publishing:
-            raise ValueError("Real publishers are not enabled in this stage")
+        report = validate_content(
+            topic=job.topic,
+            script=job.script_text,
+            metadata_json=job.metadata_json,
+            render_path=job.render_path or f"mock://{job.id}",
+        )
+        if not report.passed:
+            raise ValueError(f"Quality gate blocked publication: {', '.join(report.blockers)}")
+        platforms = ["youtube", "instagram"] if job.platform == "both" else [job.platform]
+        metadata = json.loads(job.metadata_json or "{}")
+        for platform in platforms:
+            key = f"{job.id}:{job.content_version}:{platform}"
+            record = session.scalar(select(PublicationRecord).where(PublicationRecord.idempotency_key == key))
+            if record and record.status == "published":
+                continue
+            result = get_publisher(platform).publish(
+                title=metadata["title"],
+                description=metadata["description"],
+                media_path=job.render_path or f"mock://{job.id}",
+            )
+            if record is None:
+                record = PublicationRecord(job_id=job.id, platform=platform, idempotency_key=key)
+                session.add(record)
+            record.status = result.status
+            record.remote_id = result.remote_id
+            record.remote_url = result.remote_url
+            record.error_message = result.detail if result.status != "published" else None
+            if result.status != "published":
+                raise ValueError(result.detail)
         job.status = "published"
         job.updated_at = datetime.now(timezone.utc)
         session.commit()

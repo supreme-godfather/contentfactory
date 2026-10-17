@@ -91,6 +91,31 @@ class AnalyticsSnapshot(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class PlatformAccount(Base):
+    __tablename__ = "platform_accounts"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(30), index=True)
+    account_name: Mapped[str] = mapped_column(String(160))
+    enabled: Mapped[int] = mapped_column(Integer, default=0)
+    authorized: Mapped[int] = mapped_column(Integer, default=0)
+    daily_limit: Mapped[int] = mapped_column(Integer, default=3)
+
+
+class PublicationRecord(Base):
+    __tablename__ = "publication_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    platform: Mapped[str] = mapped_column(String(30), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="pending")
+    remote_id: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    remote_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 settings = get_settings()
 if settings.database_url.startswith("sqlite:///"):
     Path("data").mkdir(exist_ok=True)

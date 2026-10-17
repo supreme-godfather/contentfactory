@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from .config import get_settings
 from .db import init_db
 from .discovery import add_analytics_snapshot, add_trend, analytics_summary, list_trends
+from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
 from .services import approve_job, claim_render_job, complete_render_job, create_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
 from .telegram import handle_update
@@ -124,6 +125,23 @@ def add_trend_candidate(request: TrendRequest, _: None = Depends(require_admin_a
 @app.get("/api/analytics")
 def analytics(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
     return analytics_summary()
+
+
+@app.get("/api/jobs/{job_id}/quality")
+def quality(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .db import SessionLocal, ContentJob
+
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        report = validate_content(
+            topic=job.topic,
+            script=job.script_text,
+            metadata_json=job.metadata_json,
+            render_path=job.render_path,
+        )
+    return {"passed": report.passed, "score": report.score, "blockers": report.blockers}
 
 
 @app.post("/api/jobs/{job_id}/approve")

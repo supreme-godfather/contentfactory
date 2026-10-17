@@ -46,6 +46,7 @@ during the initial security stage.
   integration, or when a job is not approved.
 - Duplicate publication is prevented by an idempotency key.
 - Pause/resume state is persisted in the database.
+- A worker render artifact and quality gate are required before publication.
 - The Telegram webhook requires `TELEGRAM_WEBHOOK_SECRET` when configured.
 
 ## Next implementation stage
