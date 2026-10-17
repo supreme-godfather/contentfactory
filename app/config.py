@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     admin_api_token: str = ""
     worker_token: str = ""
     worker_poll_seconds: int = 30
+    worker_lease_seconds: int = 900
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
     telegram_owner_ids: str = "1112018699"

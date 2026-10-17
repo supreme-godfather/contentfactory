@@ -175,19 +175,19 @@ def worker_heartbeat_endpoint(worker_id: str, _: None = Depends(require_worker_t
 
 
 @app.post("/api/worker/claim")
-def worker_claim(_: None = Depends(require_worker_token)) -> dict[str, object]:
+def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dict[str, object]:
     if is_paused():
         return {"job": None, "reason": "factory_paused"}
-    job = claim_render_job()
+    job = claim_render_job(worker_id)
     if job is None:
         return {"job": None, "reason": "queue_empty"}
     return {"job": {"id": job.id, "topic": job.topic, "brand": job.brand, "platform": job.platform}}
 
 
 @app.post("/api/worker/{job_id}/complete")
-def worker_complete(job_id: str, render_path: str, _: None = Depends(require_worker_token)) -> dict[str, object]:
+def worker_complete(job_id: str, worker_id: str, render_path: str, _: None = Depends(require_worker_token)) -> dict[str, object]:
     try:
-        job = complete_render_job(job_id, "worker", render_path)
+        job = complete_render_job(job_id, worker_id, render_path)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "stage": job.stage}

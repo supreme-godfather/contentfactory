@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 from hashlib import sha256
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from .config import get_settings
 from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, WorkerLease
@@ -162,18 +162,32 @@ def worker_heartbeat(worker_id: str) -> None:
         session.commit()
 
 
-def claim_render_job() -> ContentJob | None:
+def claim_render_job(worker_id: str) -> ContentJob | None:
+    now = datetime.now(timezone.utc)
+    lease_until = now.timestamp() + get_settings().worker_lease_seconds
+    lease_expires = datetime.fromtimestamp(lease_until, timezone.utc)
     with SessionLocal() as session:
         job = session.scalar(
             select(ContentJob)
-            .where(ContentJob.status == "queued")
+            .where(
+                or_(
+                    ContentJob.status == "queued",
+                    (ContentJob.status == "rendering")
+                    & (
+                        (ContentJob.lease_expires_at.is_(None))
+                        | (ContentJob.lease_expires_at < now)
+                    ),
+                )
+            )
             .order_by(ContentJob.created_at.asc())
             .limit(1)
         )
         if job is None:
             return None
         job.status = "rendering"
-        job.updated_at = datetime.now(timezone.utc)
+        job.claimed_by = worker_id
+        job.lease_expires_at = lease_expires
+        job.updated_at = now
         session.commit()
         session.refresh(job)
         return job
@@ -184,11 +198,13 @@ def complete_render_job(job_id: str, worker_id: str, render_path: str) -> Conten
         raise ValueError("Invalid render path")
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)
-        if not job or job.status != "rendering":
+        if not job or job.status != "rendering" or job.claimed_by != worker_id:
             raise ValueError("Job is not currently rendering")
         job.render_path = render_path
         job.stage = "quality_check"
         job.status = "awaiting_approval"
+        job.claimed_by = None
+        job.lease_expires_at = None
         job.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(job)

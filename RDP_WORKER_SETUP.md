@@ -39,3 +39,7 @@ The current worker produces a render manifest, not a finished MP4. It only
 claims queued rendering jobs and does not receive Telegram, YouTube, Instagram,
 or database credentials. FFmpeg/TTS rendering will replace the manifest stage
 before real publishing is enabled.
+
+If the RDP is switched off during a render, its lease expires after the
+configured `WORKER_LEASE_SECONDS` (default 15 minutes). Railway then makes the
+job available for the next worker run instead of leaving it permanently stuck.

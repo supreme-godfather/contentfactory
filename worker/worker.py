@@ -36,7 +36,7 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
         while True:
             heartbeat = client.post("/api/worker/heartbeat", params={"worker_id": worker_id})
             heartbeat.raise_for_status()
-            response = client.post("/api/worker/claim")
+            response = client.post("/api/worker/claim", params={"worker_id": worker_id})
             response.raise_for_status()
             payload = response.json()
             job = payload.get("job")
@@ -45,7 +45,7 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                 render_path = render_manifest(job, output_dir)
                 completed = client.post(
                     f"/api/worker/{job['id']}/complete",
-                    params={"render_path": render_path},
+                    params={"worker_id": worker_id, "render_path": render_path},
                 )
                 completed.raise_for_status()
                 print(f"Completed {job['id']}", flush=True)

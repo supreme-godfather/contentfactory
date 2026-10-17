@@ -27,6 +27,8 @@ class ContentJob(Base):
     script_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     render_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -126,3 +128,14 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    # Keep the small initial deployment upgradeable without a migration runner.
+    # Future schema changes should move to versioned migrations.
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("content_jobs")}
+    with engine.begin() as connection:
+        if "claimed_by" not in columns:
+            connection.execute(text("ALTER TABLE content_jobs ADD COLUMN claimed_by VARCHAR(120)"))
+        if "lease_expires_at" not in columns:
+            connection.execute(text("ALTER TABLE content_jobs ADD COLUMN lease_expires_at TIMESTAMP"))
