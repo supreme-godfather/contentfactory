@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
     telegram_owner_ids: str = "1112018699"
-    telegram_language: str = "bilingual"
+    telegram_language: str = "english"
     youtube_enabled: bool = False
     instagram_enabled: bool = False
     max_daily_publications: int = 6
