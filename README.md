@@ -48,6 +48,8 @@ during the initial security stage.
 - Pause/resume state is persisted in the database.
 - A worker render artifact and quality gate are required before publication.
 - The Telegram webhook requires `TELEGRAM_WEBHOOK_SECRET` when configured.
+- Telegram control buttons and messages are English-only by default; generated
+  channel content can remain Hindi.
 
 ## Next implementation stage
 

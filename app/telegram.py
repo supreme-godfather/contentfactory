@@ -95,7 +95,7 @@ async def handle_update(update: dict[str, Any]) -> None:
 
     text = (message.get("text") or "").strip()
     if text == "/start":
-        await send_message(chat_id, "Hindi Content Factory is ready and paused.", _keyboard())
+        await send_message(chat_id, "Content Factory is ready and paused.", _keyboard())
     elif text == "/help":
         await send_message(chat_id, "/status, /queue, /trends, /analytics, /generate <topic>, /approve <job-id>, /publish <job-id>, /pause, /resume", _keyboard())
     elif text == "/status":
