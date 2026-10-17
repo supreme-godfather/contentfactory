@@ -70,6 +70,8 @@ class TrendCandidate(Base):
     originality_score: Mapped[int] = mapped_column(Integer, default=100)
     risk_score: Mapped[int] = mapped_column(Integer, default=0)
     total_score: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    originality_required: Mapped[int] = mapped_column(Integer, default=75)
+    transformation_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="candidate", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

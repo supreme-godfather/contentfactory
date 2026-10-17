@@ -34,6 +34,7 @@ class TrendRequest(BaseModel):
     relevance: int = Field(default=50, ge=0, le=100)
     originality: int = Field(default=100, ge=0, le=100)
     risk: int = Field(default=0, ge=0, le=100)
+    transformation_notes: str | None = Field(default=None, max_length=500)
 
 
 @app.get("/health")
@@ -113,6 +114,7 @@ def add_trend_candidate(request: TrendRequest, _: None = Depends(require_admin_a
             request.relevance,
             request.originality,
             request.risk,
+            request.transformation_notes,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -31,6 +31,7 @@ def add_trend(
     relevance: int = 50,
     originality: int = 100,
     risk: int = 0,
+    transformation_notes: str | None = None,
 ) -> TrendCandidate:
     if source_url and not re.match(r"^https?://", source_url):
         raise ValueError("Source URL must use HTTPS or HTTP")
@@ -54,6 +55,8 @@ def add_trend(
             originality_score=_bounded(originality),
             risk_score=_bounded(risk),
             total_score=score,
+            originality_required=75,
+            transformation_notes=transformation_notes,
         )
         session.add(item)
         session.commit()
