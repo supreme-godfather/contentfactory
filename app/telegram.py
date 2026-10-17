@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import re
 from typing import Any
 
 import httpx
@@ -63,7 +64,10 @@ async def configure_webhook() -> None:
         "drop_pending_updates": "false",
     }
     if settings.telegram_webhook_secret:
-        payload["secret_token"] = settings.telegram_webhook_secret
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", settings.telegram_webhook_secret):
+            payload["secret_token"] = settings.telegram_webhook_secret
+        else:
+            logger.error("Telegram webhook secret has illegal characters; registering without a secret")
     async with httpx.AsyncClient(timeout=15) as client:
         for attempt in range(1, 6):
             try:

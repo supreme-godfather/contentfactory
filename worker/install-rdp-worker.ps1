@@ -11,18 +11,13 @@ trap {
     Read-Host "Press Enter to close"
     exit 1
 }
-$installRoot = "C:\ProgramData\HindiContentFactory"
+$installRoot = Join-Path $env:LOCALAPPDATA "HindiContentFactory"
 $workerPath = Join-Path $installRoot "worker.py"
 $tokenPath = Join-Path $installRoot "worker-token.txt"
 $venvPath = Join-Path $installRoot ".venv"
-$taskName = "Hindi Content Factory Worker"
+$taskName = "Hindi Content Factory Worker (User)"
 $sourceWorker = Join-Path $PSScriptRoot "worker.py"
 $sourceRequirements = Join-Path $PSScriptRoot "requirements.txt"
-
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "Run PowerShell as Administrator, then run this script again."
-}
 
 $python = Get-Command py -ErrorAction SilentlyContinue
 if (-not $python) {
@@ -41,23 +36,7 @@ New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 Copy-Item -LiteralPath $sourceWorker -Destination $workerPath -Force
 Copy-Item -LiteralPath $sourceRequirements -Destination (Join-Path $installRoot "requirements.txt") -Force
 
-# A previous installation protects this file from overwrite. Reset only this
-# known installation file so the installer can be safely rerun by an admin.
-if (Test-Path -LiteralPath $tokenPath) {
-    & takeown.exe /F $tokenPath /A | Out-Null
-    & icacls.exe $tokenPath /reset /C | Out-Null
-    & icacls.exe $tokenPath /grant:r "BUILTIN\Administrators:(F)" /C | Out-Null
-}
 Set-Content -LiteralPath $tokenPath -Value $token -NoNewline -Encoding utf8
-$acl = Get-Acl $tokenPath
-$acl.SetAccessRuleProtection($true, $false)
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "SYSTEM", "Read", "Allow")
-$acl.SetAccessRule($rule)
-$adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "BUILTIN\Administrators", "FullControl", "Allow")
-$acl.SetAccessRule($adminRule)
-Set-Acl -LiteralPath $tokenPath -AclObject $acl
 Remove-Variable token
 
 if (-not (Test-Path (Join-Path $venvPath "Scripts\python.exe"))) {
@@ -65,8 +44,8 @@ if (-not (Test-Path (Join-Path $venvPath "Scripts\python.exe"))) {
 }
 & (Join-Path $venvPath "Scripts\python.exe") -m pip install --disable-pip-version-check -r (Join-Path $installRoot "requirements.txt")
 
-$taskCommand = "`"$workerPath`" --url `"$FactoryUrl`" --token-file `"$tokenPath`" --poll-seconds $PollSeconds --output-dir `"$installRoot\media`""
-& schtasks.exe /Create /TN $taskName /TR "`"$($venvPath)\Scripts\python.exe`" $taskCommand" /SC ONSTART /RU SYSTEM /RL HIGHEST /F | Out-Host
+$taskCommand = "`"$($venvPath)\Scripts\python.exe`" `"$workerPath`" --url `"$FactoryUrl`" --token-file `"$tokenPath`" --poll-seconds $PollSeconds --output-dir `"$installRoot\media`""
+& schtasks.exe /Create /TN $taskName /TR $taskCommand /SC ONLOGON /F | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to create the Windows startup task. schtasks exit code: $LASTEXITCODE"
 }

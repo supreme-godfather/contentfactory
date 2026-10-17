@@ -1,4 +1,5 @@
 import hmac
+import re
 
 from fastapi import Header, HTTPException
 
@@ -24,6 +25,8 @@ def require_worker_token(token: str | None = Header(default=None, alias="X-Worke
 
 def verify_webhook_secret(secret: str | None = Header(default=None, alias="X-Telegram-Bot-Api-Secret-Token")) -> None:
     expected = get_settings().telegram_webhook_secret
+    if expected and not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", expected):
+        expected = ""
     if expected and not secret:
         raise HTTPException(status_code=401, detail="Missing webhook secret")
     if expected and not hmac.compare_digest(secret or "", expected):

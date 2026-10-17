@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -15,7 +16,7 @@ from .telegram import configure_webhook, handle_update
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    await configure_webhook()
+    asyncio.create_task(configure_webhook())
     yield
 
 
