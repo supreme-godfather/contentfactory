@@ -12,3 +12,5 @@ data/
 secrets/
 worker-token.txt
 worker-package.zip
+worker/*.zip
+worker/*.rar
