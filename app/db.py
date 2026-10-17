@@ -120,6 +120,8 @@ class PublicationRecord(Base):
 
 settings = get_settings()
 database_url = settings.database_url
+if not database_url.strip():
+    database_url = "sqlite:///./data/factory.db"
 if database_url.startswith("postgresql://"):
     database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 elif database_url.startswith("postgres://"):
