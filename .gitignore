@@ -14,4 +14,6 @@ worker-token.txt
 worker-package.zip
 worker/*.zip
 worker/*.rar
+*.zip
+*.rar
 AGENT_HANDOFF.local.md
