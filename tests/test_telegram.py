@@ -15,8 +15,7 @@ import pytest
 
 # ── Shared fixtures ─────────────────────────────────────────────────────
 @pytest.fixture(autouse=True)
-def isolated_database(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+def isolated_database(monkeypatch):
     monkeypatch.setenv("APP_PAUSED", "true")
     monkeypatch.setenv("MOCK_PUBLISHING", "true")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
@@ -24,9 +23,12 @@ def isolated_database(monkeypatch, tmp_path: Path):
     from app.config import get_settings
 
     get_settings.cache_clear()
-    from app.db import init_db
+    import app.db
+    from app.db import Base, engine, init_db
 
     init_db()
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
     yield
     get_settings.cache_clear()
 

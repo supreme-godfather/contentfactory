@@ -32,10 +32,11 @@ It is intentionally append-only: do not rewrite older entries.
 - **Status:** done
 - **Files changed:**
   - `factory/app/telegram.py` (redesigned UX, dynamic status keyboard, emoji status indicators, visual score progress bars, detailed job cards, safe error masking)
-  - `factory/tests/test_telegram.py` (new test suite with 40 tests covering formatting, safe errors, keyboards, message builders, command dispatch, and callbacks)
+  - `factory/tests/test_telegram.py` (test suite with 40 tests covering formatting, safe errors, keyboards, message builders, command dispatch, callbacks, and isolated DB resets)
+  - `factory/tests/test_youtube_oauth.py` (unit test suite with 8 tests covering OAuth URL generation, HMAC state verification, token encryption, and credential storage)
   - `content engine/api_server.py` (path traversal prevention via `_safe_filename()`, modern FastAPI `lifespan` handler, improved exception logging)
 - **Tests run:**
-  - `pytest tests/ -v` in `factory/` → 44 passed, 0 failed (4 existing + 40 new).
+  - `pytest tests/ -v` in `factory/` → 52 passed, 0 failed (4 core + 40 telegram + 8 youtube_oauth).
 - **Behavioral changes:**
   - Telegram bot now features rich visual layouts with dividers, stage badges (`QUEUED`, `RENDERING`, `AWAITING APPROVAL`, etc.), and visual score bars (`[■■■■■□□□□□]`).
   - Telegram main keyboard dynamically toggles between `⏸ Pause Factory` and `▶ Resume Factory` based on current live state.
