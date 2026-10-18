@@ -54,6 +54,9 @@ during the initial security stage.
 - The Telegram webhook requires `TELEGRAM_WEBHOOK_SECRET` when configured.
 - Telegram control buttons and messages are English-only by default; generated
   channel content can remain Hindi.
+- The command center is mobile-first: `/start`, `/status`, `/queue`, `/generate`,
+  `/approve`, `/publish`, `/pause`, `/resume`, `/analytics`, and `/sync` are
+  owner-protected Telegram controls.
 
 ## Next implementation stage
 

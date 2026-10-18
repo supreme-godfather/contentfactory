@@ -225,6 +225,7 @@ async def configure_webhook() -> None:
                 {"command": "queue", "description": "📥 Review content queue"},
                 {"command": "trends", "description": "🔥 View trend radar"},
                 {"command": "analytics", "description": "📈 Performance analytics"},
+                {"command": "sync", "description": "🔄 Sync YouTube analytics"},
                 {"command": "generate", "description": "✨ Create a Hindi preview"},
                 {"command": "pause", "description": "⏸️ Pause the factory"},
                 {"command": "resume", "description": "▶️ Resume the factory"},
@@ -240,19 +241,26 @@ async def configure_webhook() -> None:
 
 # ── Response builders ───────────────────────────────────────────────────
 def _build_start_message() -> str:
+    settings = get_settings()
+    youtube = connection_status()
+    youtube_state = "🟢 Connected" if youtube["authorized"] else "⚪ Not connected"
+    factory_state = "⏸️ Paused" if is_paused() else "▶️ Running"
     return (
-        f"🎬 <b>Content Factory</b>\n"
+        f"🎬 <b>AI Stories Island · Content Factory</b>\n"
+        f"<i>Private creator command center</i>\n"
         f"{_divider()}\n"
         f"\n"
-        f"Your private Hindi content engine is online.\n"
+        f"✨ Your Hindi content factory is online.\n"
         f"\n"
+        f"  {factory_state}  Factory control\n"
         f"  🔒  Approval-gated publishing\n"
-        f"  🧠  Trend-driven, original content\n"
-        f"  🛡️  Real platforms disabled until authorized\n"
-        f"  🎯  AI-powered Hindi explainers\n"
+        f"  🧠  Original, trend-aware stories\n"
+        f"  🎞️  RDP render + caption pipeline\n"
+        f"  ▶️  YouTube: {youtube_state}\n"
+        f"  🧪  Mode: {'Safe preview' if settings.mock_publishing else 'Live gated'}\n"
         f"\n"
         f"{_divider()}\n"
-        f"Choose an action below to get started."
+        f"Choose an action below to control the factory from your phone."
     )
 
 
@@ -395,6 +403,7 @@ def _build_help_message() -> str:
         f"  /queue — Review pending content\n"
         f"  /trends — Browse trend candidates\n"
         f"  /analytics — Performance metrics\n"
+        f"  /sync — Sync official YouTube analytics\n"
         f"\n"
         f"<b>⚙️ Controls</b>\n"
         f"  /pause — Pause all automation\n"
@@ -405,6 +414,7 @@ def _build_help_message() -> str:
         f"  • All content requires approval before publishing\n"
         f"  • Use short job IDs (first 8 chars) with commands\n"
         f"  • The factory starts paused for safety\n"
+        f"  • YouTube uploads remain private until explicitly enabled\n"
         f"\n"
         f"{_divider()}"
     )
@@ -617,6 +627,28 @@ async def handle_update(update: dict[str, Any]) -> None:
 
         elif text == "/analytics":
             await send_message(chat_id, _build_analytics_message(), _keyboard())
+
+        elif text == "/sync":
+            try:
+                result = sync_channel_analytics()
+                await send_message(
+                    chat_id,
+                    (
+                        "✅ <b>YouTube analytics synced</b>\n"
+                        f"{_divider()}\n\n"
+                        f"📺 Channel: <b>{html.escape(str(result['account']))}</b>\n"
+                        f"📅 Period: {result['start_date']} → {result['end_date']}\n\n"
+                        "Use /analytics to view the latest snapshot."
+                    ),
+                    _keyboard(),
+                )
+            except Exception:
+                logger.exception("YouTube analytics sync failed")
+                await send_message(
+                    chat_id,
+                    "⚠️ Analytics sync is unavailable. Connect YouTube and try again.",
+                    _keyboard(),
+                )
 
         elif text.startswith("/generate "):
             topic = text[10:].strip()
