@@ -57,10 +57,15 @@ during the initial security stage.
 - The command center is mobile-first: `/start`, `/status`, `/queue`, `/generate`,
   `/approve`, `/publish`, `/pause`, `/resume`, `/analytics`, and `/sync` are
   owner-protected Telegram controls.
+- Google Cloud media generation is opt-in. With `GOOGLE_MEDIA_ENABLED=true`,
+  Railway creates a Hindi Google Cloud Text-to-Speech MP3 and a Vertex AI
+  Imagen scene image; the outbound RDP worker downloads only those job assets
+  and combines them with captions into the MP4.
 
 ## Next implementation stage
 
-Hindi TTS and caption timing remain behind the existing MP4 renderer.
+Hindi TTS and Imagen artwork are wired through Google Cloud but remain disabled
+until the service-account variables are configured and a private test is run.
 YouTube now has token refresh and official resumable upload support, but keep
 `YOUTUBE_PRIVACY_STATUS=private` and `APP_PAUSED=true` for the first test.
 Only enable live YouTube publishing after a private test upload succeeds.

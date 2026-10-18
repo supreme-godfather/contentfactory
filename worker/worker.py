@@ -33,7 +33,7 @@ def _filter_path(value: Path) -> str:
     return str(value.resolve()).replace("\\", "/").replace(":", r"\:")
 
 
-def render_video(job: dict[str, str], output_dir: Path) -> str:
+def render_video(job: dict[str, str], output_dir: Path, image_path: Path | None = None, audio_path: Path | None = None) -> str:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("FFmpeg is required on the RDP worker. Install FFmpeg and restart the worker.")
@@ -76,12 +76,22 @@ def render_video(job: dict[str, str], output_dir: Path) -> str:
             f"enable='between(t,{start:.3f},{end:.3f})'{font_option}"
         )
     video_filter = ",".join(filters)
-    command = [
-        ffmpeg, "-y", "-f", "lavfi", "-i",
-        f"color=c=0x111827:s=1080x1920:r=30:d={duration}",
-        "-vf", video_filter, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", str(output_path),
-    ]
+    inputs = []
+    if image_path and image_path.exists():
+        inputs.extend(["-loop", "1", "-i", str(image_path)])
+    else:
+        inputs.extend(["-f", "lavfi", "-i", f"color=c=0x111827:s=1080x1920:r=30:d={duration}"])
+    if audio_path and audio_path.exists():
+        inputs.extend(["-i", str(audio_path)])
+    command = [ffmpeg, "-y", *inputs]
+    if audio_path and audio_path.exists():
+        command.extend(["-map", "0:v:0", "-map", "1:a:0"])
+    command.extend(["-vf", video_filter, "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+    if audio_path and audio_path.exists():
+        command.extend(["-c:a", "aac", "-t", str(duration)])
+    else:
+        command.append("-an")
+    command.extend(["-movflags", "+faststart", str(output_path)])
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
     if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size < 1024:
         detail = completed.stderr[-1000:].strip()
@@ -104,7 +114,20 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
             if job:
                 print(f"Claimed {job['id']} · {job['topic']}", flush=True)
                 try:
-                    render_path = render_video(job, output_dir)
+                    assets = job.get("assets") or {}
+                    local_assets = {}
+                    for kind, name in assets.items():
+                        destination = output_dir / name
+                        response = client.get(f"/api/worker/{job['id']}/asset/{name}")
+                        response.raise_for_status()
+                        destination.write_bytes(response.content)
+                        local_assets[kind] = destination
+                    render_path = render_video(
+                        job,
+                        output_dir,
+                        local_assets.get("image"),
+                        local_assets.get("voiceover"),
+                    )
                     with Path(render_path).open("rb") as media:
                         uploaded = client.post(
                             f"/api/worker/{job['id']}/media",

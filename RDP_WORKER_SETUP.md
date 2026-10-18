@@ -13,27 +13,23 @@ Add a random `WORKER_TOKEN` to the Railway service. Use a different value from
 
 Install Python 3.11+ on the RDP using the official python.org installer and
 enable the Python Launcher. Copy the `worker` directory to the machine, open
-PowerShell as Administrator in that directory, and run:
+PowerShell as the signed-in RDP user in that directory, and run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\install-rdp-worker.ps1
 ```
 
-The installer asks for the worker token locally, stores it in an ACL-protected
-`C:\ProgramData\HindiContentFactory\worker-token.txt`, installs the pinned
-HTTP client, and creates a SYSTEM startup task. The token is not sent to
+The installer asks for the worker token locally, stores it under
+`%LOCALAPPDATA%\HindiContentFactory\worker-token.txt`, installs the pinned
+HTTP client, and creates a Startup-folder shortcut. The token is not sent to
 Railway in a command line or committed file.
 
 ## Always-on operation
 
-The installer creates the Windows Task Scheduler entry automatically:
-
-- Task: `Hindi Content Factory Worker`
-- Trigger: At startup
-- Account: SYSTEM
-- Restart on failure
-- No inbound firewall rule
+The installer creates a user Startup shortcut automatically. The signed-in RDP
+user session must start for the worker to run; no inbound firewall rule is
+needed.
 
 The worker renders a real vertical H.264 MP4 with FFmpeg. Install FFmpeg on
 the RDP and ensure `ffmpeg.exe` is available on PATH before starting the

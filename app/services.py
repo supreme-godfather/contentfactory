@@ -1,11 +1,13 @@
 import json
 from datetime import datetime, timezone
 from hashlib import sha256
+from pathlib import Path
 
 from sqlalchemy import or_, select
 
 from .config import get_settings
 from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, WorkerLease
+from .google_media import create_job_assets
 from .publishers import get_publisher
 from .quality import validate_content
 
@@ -43,8 +45,7 @@ def generate_content(job_id: str) -> ContentJob:
             "ऐसी जानकारी के लिए YouTube पर Learn With Elite Explainer को subscribe "
             "और Instagram पर sheoran_studios को follow करें।"
         )
-        job.metadata_json = json.dumps(
-            {
+        metadata = {
                 "title": f"{job.topic} की असली कहानी | आसान हिंदी में",
                 "description": (
                     f"{job.topic} को आसान हिंदी में समझिए।\n\n"
@@ -59,7 +60,11 @@ def generate_content(job_id: str) -> ContentJob:
                 "visual_direction": "original Hindi explainer visuals; no creator copying",
                 "caption_policy": "burned captions required for muted playback",
                 "approval_required": True,
-            },
+            }
+        assets = create_job_assets(job.id, job.topic, job.script_text, Path(get_settings().media_root))
+        metadata["assets"] = assets
+        job.metadata_json = json.dumps(
+            metadata,
             ensure_ascii=False,
         )
         # The RDP must render the media before the operator can approve it.

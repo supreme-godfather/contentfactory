@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     max_media_mb: int = 250
     youtube_privacy_status: str = "private"
     youtube_analytics_days: int = 30
+    google_media_enabled: bool = False
+    google_cloud_project: str = ""
+    google_cloud_location: str = "us-central1"
+    google_service_account_json: str = ""
+    google_tts_voice: str = "hi-IN-Neural2-A"
+    google_image_model: str = "imagen-3.0-generate-002"
     instagram_enabled: bool = False
     max_daily_publications: int = 6
     max_concurrent_jobs: int = 1

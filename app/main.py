@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .config import get_settings
@@ -232,8 +233,27 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "script": job.script_text or "",
             "title": metadata.get("title", job.topic),
             "story_arc": metadata.get("story_arc", ["problem", "stakes", "solution", "how", "payoff"]),
+            "assets": metadata.get("assets", {}),
         }
     }
+
+
+@app.get("/api/worker/{job_id}/asset/{asset_name}")
+def worker_asset(job_id: str, asset_name: str, _: None = Depends(require_worker_token)) -> FileResponse:
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job or job.status != "rendering":
+            raise HTTPException(status_code=409, detail="Job is not currently rendering")
+        try:
+            assets = json.loads(job.metadata_json or "{}").get("assets", {})
+        except json.JSONDecodeError:
+            assets = {}
+    if asset_name not in assets.values() or Path(asset_name).name != asset_name:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    path = (Path(get_settings().media_root).resolve() / asset_name).resolve()
+    if path.parent != Path(get_settings().media_root).resolve() or not path.exists():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return FileResponse(path)
 
 
 @app.post("/api/worker/{job_id}/complete")
