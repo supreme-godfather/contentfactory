@@ -92,7 +92,10 @@ if __name__ == "__main__":
     if args.token_file:
         token_path = Path(args.token_file)
         if token_path.exists():
-            args.token = token_path.read_text(encoding="utf-8").strip()
+            # Windows PowerShell may write UTF-8 files with a BOM.
+            args.token = token_path.read_text(encoding="utf-8-sig").strip()
     if not args.token:
         raise SystemExit("WORKER_TOKEN is required")
+    if any(ord(char) < 33 or ord(char) > 126 for char in args.token):
+        raise SystemExit("WORKER_TOKEN contains unsupported characters; re-enter the Railway token exactly.")
     run(args.url, args.token, max(5, args.poll_seconds), Path(args.output_dir))

@@ -38,7 +38,7 @@ New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 Copy-Item -LiteralPath $sourceWorker -Destination $workerPath -Force
 Copy-Item -LiteralPath $sourceRequirements -Destination (Join-Path $installRoot "requirements.txt") -Force
 
-Set-Content -LiteralPath $tokenPath -Value $token -NoNewline -Encoding utf8
+Set-Content -LiteralPath $tokenPath -Value $token -NoNewline -Encoding ascii
 Remove-Variable token
 
 if (-not (Test-Path (Join-Path $venvPath "Scripts\python.exe"))) {
