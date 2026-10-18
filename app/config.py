@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     media_root: str = "data/media"
     max_media_mb: int = 250
     youtube_privacy_status: str = "private"
+    youtube_analytics_days: int = 30
     instagram_enabled: bool = False
     max_daily_publications: int = 6
     max_concurrent_jobs: int = 1

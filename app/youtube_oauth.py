@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -183,3 +183,58 @@ def get_valid_access_token() -> str:
         credential.token_type = payload.get("token_type", credential.token_type)
         session.commit()
     return access_token
+
+
+def sync_channel_analytics() -> dict[str, object]:
+    """Fetch official channel totals and persist one current analytics snapshot."""
+    from .discovery import add_analytics_snapshot
+
+    settings = get_settings()
+    token = get_valid_access_token()
+    end_date = date.today()
+    start_date = end_date - timedelta(days=max(1, settings.youtube_analytics_days))
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(timeout=30) as client:
+        channel_response = client.get(
+            "https://www.googleapis.com/youtube/v3/channels",
+            params={"part": "snippet", "mine": "true"},
+            headers=headers,
+        )
+        channel_response.raise_for_status()
+        channels = channel_response.json().get("items", [])
+        if not channels:
+            raise RuntimeError("No YouTube channel is available for the authorized account")
+        channel = channels[0]
+        channel_id = channel.get("id", "mine")
+        account = channel.get("snippet", {}).get("title") or channel_id
+        analytics_response = client.get(
+            "https://youtubeanalytics.googleapis.com/v2/reports",
+            params={
+                "ids": "channel==MINE",
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "metrics": "views,likes,comments,estimatedMinutesWatched",
+            },
+            headers=headers,
+        )
+        analytics_response.raise_for_status()
+        rows = analytics_response.json().get("rows", [])
+    values = rows[0] if rows else [0, 0, 0, 0]
+    snapshot = add_analytics_snapshot(
+        platform="youtube",
+        account=account,
+        content_id=f"channel:{channel_id}",
+        views=int(values[0] or 0),
+        likes=int(values[1] or 0),
+        comments=int(values[2] or 0),
+        shares=0,
+        watch_seconds=int(float(values[3] or 0) * 60),
+    )
+    return {
+        "platform": "youtube",
+        "account": account,
+        "channel_id": channel_id,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "snapshot_id": snapshot.id,
+    }

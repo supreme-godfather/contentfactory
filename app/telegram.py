@@ -11,7 +11,7 @@ from .config import get_settings
 from .security import require_owner
 from .discovery import analytics_summary, list_trends
 from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, set_paused
-from .youtube_oauth import connection_status, create_authorization_url
+from .youtube_oauth import connection_status, create_authorization_url, sync_channel_analytics
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,8 @@ def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
         "inline_keyboard": [
             [_button("✨ New content", "create"), _button("📥 Review queue", "queue")],
             [_button("📊 Status dashboard", "status"), _button("🔥 Trend radar", "trends")],
-            [_button("📈 Analytics", "analytics"), _button("🔗 Connect YouTube", "youtube_auth")],
-            [toggle, _button("🔄 Refresh", "refresh")],
+            [_button("📈 Analytics", "analytics"), _button("🔄 Sync YouTube", "sync_analytics")],
+            [_button("🔗 Connect YouTube", "youtube_auth"), _button("🔄 Refresh", "refresh"), toggle],
         ]
     }
 
@@ -483,6 +483,24 @@ async def handle_update(update: dict[str, Any]) -> None:
 
             elif data == "analytics":
                 await send_message(chat_id, _build_analytics_message(), _keyboard())
+
+            elif data == "sync_analytics":
+                try:
+                    result = sync_channel_analytics()
+                    await send_message(
+                        chat_id,
+                        (
+                            "✅ <b>YouTube analytics synced</b>\n"
+                            f"{_divider()}\n\n"
+                            f"Channel: <b>{html.escape(str(result['account']))}</b>\n"
+                            f"Period: {result['start_date']} → {result['end_date']}\n\n"
+                            "Open Analytics to view the latest snapshot."
+                        ),
+                        _keyboard(),
+                    )
+                except Exception:
+                    logger.exception("YouTube analytics sync failed")
+                    await send_message(chat_id, "⚠️ Analytics sync is unavailable. Check YouTube authorization and try again.", _keyboard())
 
             elif data == "youtube_auth":
                 status = connection_status()

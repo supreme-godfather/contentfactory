@@ -14,7 +14,7 @@ from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
 from .services import approve_job, claim_render_job, complete_render_job, create_job, fail_render_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
 from .telegram import configure_webhook, handle_update
-from .youtube_oauth import connection_status, create_authorization_url, exchange_code
+from .youtube_oauth import connection_status, create_authorization_url, exchange_code, sync_channel_analytics
 
 
 @asynccontextmanager
@@ -153,6 +153,14 @@ def add_trend_candidate(request: TrendRequest, _: None = Depends(require_admin_a
 @app.get("/api/analytics")
 def analytics(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
     return analytics_summary()
+
+
+@app.post("/api/youtube/analytics/sync")
+def youtube_analytics_sync(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    try:
+        return sync_channel_analytics()
+    except (RuntimeError, httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/jobs/{job_id}/quality")
