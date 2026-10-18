@@ -23,9 +23,18 @@ def render_video(job: dict[str, str], output_dir: Path) -> str:
     duration = max(15, min(90, int(job.get("duration_seconds") or 60)))
     topic = _escape_drawtext(job["topic"][:180])
     font = job.get("font_path")
+    if not font:
+        for candidate in (
+            r"C:\Windows\Fonts\arial.ttf",
+            r"C:\Windows\Fonts\segoeui.ttf",
+            r"C:\Windows\Fonts\calibri.ttf",
+        ):
+            if Path(candidate).exists():
+                font = candidate
+                break
     drawtext = f"drawtext=text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
     if font and Path(font).exists():
-        drawtext += f":fontfile='{_escape_drawtext(font)}'"
+        drawtext = f"drawtext=fontfile='{_escape_drawtext(font)}':text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
     command = [
         ffmpeg, "-y", "-f", "lavfi", "-i",
         f"color=c=0x111827:s=1080x1920:r=30:d={duration}",
