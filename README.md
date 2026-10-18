@@ -46,14 +46,14 @@ during the initial security stage.
   integration, or when a job is not approved.
 - Duplicate publication is prevented by an idempotency key.
 - Pause/resume state is persisted in the database.
-- A worker render artifact and quality gate are required before publication.
+- A real worker-rendered MP4 and quality gate are required before publication.
 - The Telegram webhook requires `TELEGRAM_WEBHOOK_SECRET` when configured.
 - Telegram control buttons and messages are English-only by default; generated
   channel content can remain Hindi.
 
 ## Next implementation stage
 
-Add the Hindi script/TTS/rendering worker behind the existing job states, then
+Add Hindi TTS and caption timing behind the existing MP4 renderer, then
 implement YouTube OAuth and Meta's official Instagram publishing flow. Do not
 enable either integration until account permissions and test publication are
 verified.

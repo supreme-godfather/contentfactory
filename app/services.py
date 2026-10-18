@@ -215,3 +215,21 @@ def complete_render_job(job_id: str, worker_id: str, render_path: str) -> Conten
         session.commit()
         session.refresh(job)
         return job
+
+
+def fail_render_job(job_id: str, worker_id: str, error_message: str) -> ContentJob:
+    if not error_message or len(error_message) > 1000:
+        raise ValueError("Invalid render error")
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job or job.status != "rendering" or job.claimed_by != worker_id:
+            raise ValueError("Job is not currently rendering")
+        job.status = "failed"
+        job.stage = "render"
+        job.error_message = error_message
+        job.claimed_by = None
+        job.lease_expires_at = None
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job

@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import asyncio
+import json
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -9,7 +10,7 @@ from .db import init_db
 from .discovery import add_analytics_snapshot, add_trend, analytics_summary, list_trends
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
-from .services import approve_job, claim_render_job, complete_render_job, create_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
+from .services import approve_job, claim_render_job, complete_render_job, create_job, fail_render_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
 from .telegram import configure_webhook, handle_update
 
 
@@ -183,13 +184,36 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
     job = claim_render_job(worker_id)
     if job is None:
         return {"job": None, "reason": "queue_empty"}
-    return {"job": {"id": job.id, "topic": job.topic, "brand": job.brand, "platform": job.platform}}
+    metadata = {}
+    try:
+        metadata = json.loads(job.metadata_json or "{}")
+    except json.JSONDecodeError:
+        pass
+    return {
+        "job": {
+            "id": job.id,
+            "topic": job.topic,
+            "brand": job.brand,
+            "platform": job.platform,
+            "duration_seconds": metadata.get("duration_seconds", 60),
+            "script": job.script_text or "",
+        }
+    }
 
 
 @app.post("/api/worker/{job_id}/complete")
 def worker_complete(job_id: str, worker_id: str, render_path: str, _: None = Depends(require_worker_token)) -> dict[str, object]:
     try:
         job = complete_render_job(job_id, worker_id, render_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+@app.post("/api/worker/{job_id}/fail")
+def worker_fail(job_id: str, worker_id: str, error_message: str, _: None = Depends(require_worker_token)) -> dict[str, object]:
+    try:
+        job = fail_render_job(job_id, worker_id, error_message)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "stage": job.stage}

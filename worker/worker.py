@@ -3,30 +3,40 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
+import subprocess
 import time
 
 import httpx
 
 
-def render_manifest(job: dict[str, str], output_dir: Path) -> str:
+def _escape_drawtext(value: str) -> str:
+    return value.replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'").replace("%", r"\%").replace("\n", " ")
+
+
+def render_video(job: dict[str, str], output_dir: Path) -> str:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg is required on the RDP worker. Install FFmpeg and restart the worker.")
     output_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = output_dir / f"{job['id']}.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "job_id": job["id"],
-                "topic": job["topic"],
-                "brand": job["brand"],
-                "platform": job["platform"],
-                "status": "rendered-manifest",
-                "next": "replace with FFmpeg/TTS renderer",
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return str(manifest_path)
+    output_path = output_dir / f"{job['id']}.mp4"
+    duration = max(15, min(90, int(job.get("duration_seconds") or 60)))
+    topic = _escape_drawtext(job["topic"][:180])
+    font = job.get("font_path")
+    drawtext = f"drawtext=text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
+    if font and Path(font).exists():
+        drawtext += f":fontfile='{_escape_drawtext(font)}'"
+    command = [
+        ffmpeg, "-y", "-f", "lavfi", "-i",
+        f"color=c=0x111827:s=1080x1920:r=30:d={duration}",
+        "-vf", drawtext, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(output_path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size < 1024:
+        detail = completed.stderr[-1000:].strip()
+        raise RuntimeError(f"FFmpeg render failed: {detail or 'no output was created'}")
+    return str(output_path)
 
 
 def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
@@ -42,13 +52,24 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
             job = payload.get("job")
             if job:
                 print(f"Claimed {job['id']} · {job['topic']}", flush=True)
-                render_path = render_manifest(job, output_dir)
-                completed = client.post(
-                    f"/api/worker/{job['id']}/complete",
-                    params={"worker_id": worker_id, "render_path": render_path},
-                )
-                completed.raise_for_status()
-                print(f"Completed {job['id']}", flush=True)
+                try:
+                    render_path = render_video(job, output_dir)
+                    completed = client.post(
+                        f"/api/worker/{job['id']}/complete",
+                        params={"worker_id": worker_id, "render_path": render_path},
+                    )
+                    completed.raise_for_status()
+                    print(f"Completed {job['id']}", flush=True)
+                except Exception as exc:
+                    failed = client.post(
+                        f"/api/worker/{job['id']}/fail",
+                        params={"worker_id": worker_id, "error_message": str(exc)[:1000]},
+                    )
+                    failed.raise_for_status()
+                    print(f"Failed {job['id']}: {exc}", flush=True)
+            else:
+                time.sleep(poll_seconds)
+                continue
             time.sleep(poll_seconds)
 
 

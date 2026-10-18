@@ -35,10 +35,11 @@ The installer creates the Windows Task Scheduler entry automatically:
 - Restart on failure
 - No inbound firewall rule
 
-The current worker produces a render manifest, not a finished MP4. It only
-claims queued rendering jobs and does not receive Telegram, YouTube, Instagram,
-or database credentials. FFmpeg/TTS rendering will replace the manifest stage
-before real publishing is enabled.
+The worker renders a real vertical H.264 MP4 with FFmpeg. Install FFmpeg on
+the RDP and ensure `ffmpeg.exe` is available on PATH before starting the
+worker. The worker only receives a short-lived worker token; it does not
+receive Telegram, YouTube, Instagram, or database credentials. Failed renders
+are reported back to the API and are not marked ready for publication.
 
 If the RDP is switched off during a render, its lease expires after the
 configured `WORKER_LEASE_SECONDS` (default 15 minutes). Railway then makes the
