@@ -28,8 +28,9 @@ def isolated_database(monkeypatch):
     from app.db import Base, engine, init_db
 
     init_db()
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            conn.execute(table.delete())
     yield
     get_settings.cache_clear()
 

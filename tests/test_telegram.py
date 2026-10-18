@@ -27,8 +27,9 @@ def isolated_database(monkeypatch):
     from app.db import Base, engine, init_db
 
     init_db()
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            conn.execute(table.delete())
     yield
     get_settings.cache_clear()
 
@@ -83,6 +84,25 @@ class TestFormatting:
 
         result = _score_bar(50, 10)
         assert "█████░░░░░" in result
+
+    def test_loading_bar_variations(self):
+        from app.telegram import _loading_bar
+
+        assert _loading_bar(100, 10) == "[██████████] 100%"
+        assert _loading_bar(0, 10) == "[░░░░░░░░░░] 0%"
+        assert "█████░░░░░" in _loading_bar(50, 10)
+        assert _loading_bar(150, 10) == "[██████████] 100%"
+        assert _loading_bar(-20, 10) == "[░░░░░░░░░░] 0%"
+
+    def test_pipeline_bar_stages(self):
+        from app.telegram import _pipeline_bar
+
+        assert "Queued" in _pipeline_bar("queued")
+        assert "Rendering" in _pipeline_bar("rendering")
+        assert "Ready for review" in _pipeline_bar("awaiting_approval")
+        assert "Approved" in _pipeline_bar("approved")
+        assert "100%" in _pipeline_bar("published")
+        assert "Failed" in _pipeline_bar("failed")
 
     def test_divider_is_consistent(self):
         from app.telegram import _divider

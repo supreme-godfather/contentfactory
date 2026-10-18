@@ -85,20 +85,49 @@ def _score_bar(score: int, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled) + f" {score}/100"
 
 
+def _loading_bar(progress: int, width: int = 10, fill_char: str = "█", empty_char: str = "░") -> str:
+    """Render a visual loading/processing bar like [██████░░░░] 60%."""
+    clamped = max(0, min(100, progress))
+    filled = round(clamped / 100 * width)
+    return f"[{fill_char * filled}{empty_char * (width - filled)}] {clamped}%"
+
+
+_PIPELINE_STAGES: dict[str, tuple[int, str]] = {
+    "queued": (20, "20% · Queued"),
+    "rendering": (50, "50% · Rendering video"),
+    "awaiting_approval": (75, "75% · Ready for review"),
+    "approved": (90, "90% · Approved & ready to publish"),
+    "published": (100, "100% · Published"),
+    "failed": (0, "Failed"),
+}
+
+
+def _pipeline_bar(status: str, width: int = 8) -> str:
+    """Render a visual pipeline loading/processing bar for a job status."""
+    if status == "failed":
+        return f"[{'█' * 3}×{'░' * max(0, width - 4)}] Failed"
+    percent, label = _PIPELINE_STAGES.get(status, (0, status.title()))
+    clamped = max(0, min(100, percent))
+    filled = round(clamped / 100 * width)
+    return f"[{'█' * filled}{'░' * (width - filled)}] {label}"
+
+
 def _format_job_card(job: Any, *, compact: bool = False) -> str:
-    """Format a single job as a rich Telegram card."""
+    """Format a single job as a rich Telegram card with visual pipeline progress."""
     emoji = _STATUS_EMOJI.get(job.status, "⚪")
     stage = _STAGE_LABEL.get(job.stage, job.stage)
     short_id = job.id[:8]
 
     if compact:
-        return f"{emoji} <code>{html.escape(short_id)}</code>  {html.escape(job.topic)}"
+        progress_bar = _pipeline_bar(job.status, width=6)
+        return f"{emoji} <code>{html.escape(short_id)}</code>  <code>{progress_bar}</code>  {html.escape(job.topic)}"
 
     lines = [
         f"{emoji} <b>{html.escape(job.topic)}</b>",
         f"",
         f"   🆔 <code>{html.escape(job.id)}</code>",
         f"   📋 Status: <b>{job.status.replace('_', ' ').title()}</b>",
+        f"   ⏳ Pipeline: <code>{_pipeline_bar(job.status, width=10)}</code>",
         f"   🎯 Stage: {stage}",
         f"   🏷️ Brand: {html.escape(job.brand)}",
         f"   📱 Platform: {job.platform}",
@@ -237,12 +266,19 @@ def _build_status_message() -> str:
     yt_icon = "✅" if settings.youtube_enabled else "❌"
     ig_icon = "✅" if settings.instagram_enabled else "❌"
 
+    jobs = list_jobs()
+    active_jobs = [j for j in jobs if j.status in ("queued", "rendering", "awaiting_approval")]
+    max_concurrent = max(1, settings.max_concurrent_jobs)
+    load_pct = min(100, round(len(active_jobs) / max_concurrent * 100))
+    load_bar = _loading_bar(load_pct, width=8)
+
     return (
         f"📊 <b>System Dashboard</b>\n"
         f"{_divider()}\n"
         f"\n"
         f"  {state_icon}  Factory: <b>{state_text}</b>\n"
         f"  {mock_icon}  Publisher: <b>{mock_text}</b>\n"
+        f"  ⏳  Pipeline load: <code>{load_bar}</code> ({len(active_jobs)}/{max_concurrent} active)\n"
         f"\n"
         f"  <b>Platform status</b>\n"
         f"  {yt_icon}  YouTube\n"
@@ -575,6 +611,10 @@ async def handle_update(update: dict[str, Any]) -> None:
                 (
                     f"✨ <b>Preview created</b>\n{_divider()}\n\n"
                     f"{_format_job_card(job)}\n\n"
+                    f"⚙️ <b>Processing stages:</b>\n"
+                    f"   ├ 📝 Script generated:  [██████████] 100%\n"
+                    f"   ├ 🎞️ RDP video render:  [████░░░░░░]  40% (Dispatched)\n"
+                    f"   └ 🛡️ Quality gate:      [░░░░░░░░░░]   0% (Pending)\n\n"
                     f"🎞️ The RDP worker is rendering the MP4 before approval.\n"
                     f"{_divider()}"
                 ),
@@ -592,6 +632,11 @@ async def handle_update(update: dict[str, Any]) -> None:
                 (
                     f"✅ <b>Job approved</b>\n{_divider()}\n\n"
                     f"{_format_job_card(job)}\n\n"
+                    f"⚙️ <b>Processing stages:</b>\n"
+                    f"   ├ 📝 Script generated:  [██████████] 100%\n"
+                    f"   ├ 🎞️ Video rendered:    [██████████] 100%\n"
+                    f"   ├ 🛡️ Quality review:    [██████████] 100%\n"
+                    f"   └ 🚀 Live publishing:   [█████████░]  90% (Gated until resume)\n\n"
                     f"Gated until the factory is resumed.\n"
                     f"{_divider()}"
                 ),
@@ -610,6 +655,8 @@ async def handle_update(update: dict[str, Any]) -> None:
                 (
                     f"📤 <b>Published{mock_label}</b>\n{_divider()}\n\n"
                     f"{_format_job_card(job)}\n\n"
+                    f"⚙️ <b>Processing stages:</b>\n"
+                    f"   └ 🚀 Live published:    [██████████] 100% (Complete)\n\n"
                     f"{_divider()}"
                 ),
                 _keyboard(),
