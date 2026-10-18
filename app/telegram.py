@@ -12,8 +12,10 @@ from .security import require_owner
 from .discovery import analytics_summary, list_trends
 from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, set_paused
 from .youtube_oauth import connection_status, create_authorization_url, sync_channel_analytics
+from .provider_credentials import provider_status, select_provider, set_provider_secret
 
 logger = logging.getLogger(__name__)
+_pending_provider_setup: dict[int, str] = {}
 
 # ── Emoji constants for visual consistency ──────────────────────────────
 _STATUS_EMOJI = {
@@ -46,7 +48,7 @@ def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
         "inline_keyboard": [
             [_button("✨ New content", "create"), _button("📥 Review queue", "queue")],
             [_button("📊 Status dashboard", "status"), _button("🔥 Trend radar", "trends")],
-            [_button("📈 Analytics", "analytics"), _button("🔄 Sync YouTube", "sync_analytics")],
+            [_button("📈 Analytics", "analytics"), _button("🔄 Sync YouTube", "sync_analytics"), _button("🧩 Providers", "providers")],
             [_button("🔗 Connect YouTube", "youtube_auth"), _button("🔄 Refresh", "refresh"), toggle],
         ]
     }
@@ -179,6 +181,46 @@ async def send_message(chat_id: int, text: str, reply_markup: dict[str, Any] | N
         response.raise_for_status()
 
 
+async def delete_message(chat_id: int, message_id: int) -> None:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        return
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/deleteMessage"
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(url, json={"chat_id": chat_id, "message_id": message_id})
+        response.raise_for_status()
+
+
+def _provider_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    status = provider_status()
+    selected = status["selected"]
+    def label(name: str, title: str) -> str:
+        marker = " ✅ selected" if selected == name else ""
+        ready = " ✅" if status[name] else " ⚪"
+        return f"{title}{ready}{marker}"
+    return {
+        "inline_keyboard": [
+            [_button(label("google", "☁️ Google Cloud"), "provider:google")],
+            [_button(label("openai", "🤖 OpenAI"), "provider:openai")],
+            [_button("🔙 Back to menu", "menu")],
+        ]
+    }
+
+
+def _provider_message() -> str:
+    status = provider_status()
+    selected = html.escape(str(status["selected"]))
+    return (
+        f"🧩 <b>Media providers</b>\n{_divider()}\n\n"
+        f"🎯 Selected: <b>{selected}</b>\n"
+        f"☁️ Google Cloud: {'✅ configured' if status['google'] else '⚪ not configured'}\n"
+        f"🤖 OpenAI: {'✅ configured' if status['openai'] else '⚪ not configured'}\n\n"
+        "Choose a provider to add or replace its credential. "
+        "The bot deletes the credential message immediately and stores it encrypted.\n\n"
+        "⚠️ Never send YouTube, Telegram, Railway, or database secrets here."
+    )
+
+
 async def answer_callback(callback_id: str) -> None:
     settings = get_settings()
     if not settings.telegram_bot_token or not callback_id:
@@ -226,6 +268,7 @@ async def configure_webhook() -> None:
                 {"command": "trends", "description": "🔥 View trend radar"},
                 {"command": "analytics", "description": "📈 Performance analytics"},
                 {"command": "sync", "description": "🔄 Sync YouTube analytics"},
+                {"command": "providers", "description": "🧩 Configure media providers"},
                 {"command": "generate", "description": "✨ Create a Hindi preview"},
                 {"command": "pause", "description": "⏸️ Pause the factory"},
                 {"command": "resume", "description": "▶️ Resume the factory"},
@@ -404,6 +447,7 @@ def _build_help_message() -> str:
         f"  /trends — Browse trend candidates\n"
         f"  /analytics — Performance metrics\n"
         f"  /sync — Sync official YouTube analytics\n"
+        f"  /providers — Configure image and voice providers\n"
         f"\n"
         f"<b>⚙️ Controls</b>\n"
         f"  /pause — Pause all automation\n"
@@ -534,6 +578,27 @@ async def handle_update(update: dict[str, Any]) -> None:
             elif data == "refresh":
                 await send_message(chat_id, _build_status_message(), _keyboard())
 
+            elif data == "providers":
+                await send_message(chat_id, _provider_message(), _provider_keyboard())
+
+            elif data.startswith("provider:"):
+                provider = data.split(":", 1)[1]
+                if provider not in {"google", "openai"}:
+                    await send_message(chat_id, "⚠️ Unsupported provider.", _provider_keyboard())
+                    return
+                _pending_provider_setup[chat_id] = provider
+                label = "Google service-account JSON" if provider == "google" else "OpenAI API key"
+                await send_message(
+                    chat_id,
+                    (
+                        f"🔐 <b>Add {html.escape(label)}</b>\n\n"
+                        "Send the secret as your next message. It will be deleted immediately "
+                        "after receipt and never echoed back.\n\n"
+                        "Press /cancel to abort."
+                    ),
+                    _back_keyboard(),
+                )
+
             elif data.startswith("approve:"):
                 job_id = data.split(":", 1)[1]
                 job = approve_job(job_id, user_id)
@@ -610,6 +675,36 @@ async def handle_update(update: dict[str, Any]) -> None:
         # ── Text command handling ───────────────────────────────────
         text = (message.get("text") or "").strip()
 
+        if chat_id in _pending_provider_setup:
+            if text == "/cancel":
+                _pending_provider_setup.pop(chat_id, None)
+                await send_message(chat_id, "↩️ Provider setup cancelled.", _provider_keyboard())
+                return
+            provider = _pending_provider_setup.pop(chat_id)
+            try:
+                set_provider_secret(provider, text)
+                select_provider(provider)
+                message_id = message.get("message_id")
+                if isinstance(message_id, int):
+                    try:
+                        await delete_message(chat_id, message_id)
+                    except Exception:
+                        logger.warning("Could not delete provider credential message", exc_info=True)
+                await send_message(
+                    chat_id,
+                    f"✅ <b>{html.escape(provider.title())} selected and encrypted</b>\n\n"
+                    "Media generation will use this provider when MEDIA_GENERATION_ENABLED=true.",
+                    _provider_keyboard(),
+                )
+            except Exception:
+                logger.exception("Provider credential setup failed")
+                await send_message(
+                    chat_id,
+                    "⚠️ Provider setup failed. Check TOKEN_ENCRYPTION_KEY and try again.",
+                    _provider_keyboard(),
+                )
+            return
+
         if text in {"/start", "/menu"}:
             await send_message(chat_id, _build_start_message(), _keyboard())
 
@@ -649,6 +744,9 @@ async def handle_update(update: dict[str, Any]) -> None:
                     "⚠️ Analytics sync is unavailable. Connect YouTube and try again.",
                     _keyboard(),
                 )
+
+        elif text == "/providers":
+            await send_message(chat_id, _provider_message(), _provider_keyboard())
 
         elif text.startswith("/generate "):
             topic = text[10:].strip()

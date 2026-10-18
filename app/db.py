@@ -116,6 +116,14 @@ class OAuthCredential(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class ProviderCredential(Base):
+    __tablename__ = "provider_credentials"
+
+    provider: Mapped[str] = mapped_column(String(40), primary_key=True)
+    secret_encrypted: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 class PublicationRecord(Base):
     __tablename__ = "publication_records"
 

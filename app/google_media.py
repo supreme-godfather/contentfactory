@@ -7,17 +7,19 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 
 from .config import get_settings
+from .provider_credentials import get_provider_secret
 
 
 def _credentials():
     settings = get_settings()
-    if not settings.google_service_account_json or not settings.google_cloud_project:
+    service_account_json = settings.google_service_account_json or get_provider_secret("google")
+    if not service_account_json or not settings.google_cloud_project:
         raise RuntimeError(
             "Google media is enabled but GOOGLE_SERVICE_ACCOUNT_JSON and "
             "GOOGLE_CLOUD_PROJECT are not configured."
         )
     try:
-        info = json.loads(settings.google_service_account_json)
+        info = json.loads(service_account_json)
         credentials = service_account.Credentials.from_service_account_info(
             info,
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
@@ -81,8 +83,12 @@ def generate_image(prompt: str, destination: Path) -> None:
 
 def create_job_assets(job_id: str, topic: str, script: str, media_root: Path) -> dict[str, str]:
     settings = get_settings()
-    if not settings.google_media_enabled:
+    if not (settings.media_generation_enabled or settings.google_media_enabled):
         return {}
+    from .provider_credentials import provider_status
+
+    if provider_status()["selected"] == "openai":
+        return _create_openai_assets(job_id, topic, script, media_root)
     media_root.mkdir(parents=True, exist_ok=True)
     voiceover = media_root / f"{job_id}-voiceover.mp3"
     image = media_root / f"{job_id}-scene-1.png"
@@ -92,4 +98,46 @@ def create_job_assets(job_id: str, topic: str, script: str, media_root: Path) ->
         "cinematic lighting, clean composition, no text, no logos, no real person likeness.",
         image,
     )
+    return {"voiceover": voiceover.name, "image": image.name}
+
+
+def _create_openai_assets(job_id: str, topic: str, script: str, media_root: Path) -> dict[str, str]:
+    api_key = get_provider_secret("openai")
+    if not api_key:
+        raise RuntimeError("OpenAI is selected but no OpenAI API key is configured.")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    voiceover = media_root / f"{job_id}-voiceover.mp3"
+    image = media_root / f"{job_id}-scene-1.png"
+    audio = httpx.post(
+        "https://api.openai.com/v1/audio/speech",
+        headers=headers,
+        json={
+            "model": "gpt-4o-mini-tts",
+            "voice": "alloy",
+            "input": script[:4096],
+            "response_format": "mp3",
+        },
+        timeout=180,
+    )
+    audio.raise_for_status()
+    voiceover.write_bytes(audio.content)
+    artwork = httpx.post(
+        "https://api.openai.com/v1/images/generations",
+        headers=headers,
+        json={
+            "model": "gpt-image-1",
+            "prompt": (
+                f"Original vertical documentary illustration about {topic}; Hindi educational "
+                "explainer, cinematic lighting, clean composition, no text, no logos."
+            ),
+            "size": "1024x1536",
+            "quality": "medium",
+        },
+        timeout=240,
+    )
+    artwork.raise_for_status()
+    encoded = (artwork.json().get("data") or [{}])[0].get("b64_json")
+    if not encoded:
+        raise RuntimeError("OpenAI image generation returned no image.")
+    image.write_bytes(base64.b64decode(encoded))
     return {"voiceover": voiceover.name, "image": image.name}
