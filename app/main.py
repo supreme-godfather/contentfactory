@@ -222,6 +222,8 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "platform": job.platform,
             "duration_seconds": metadata.get("duration_seconds", 60),
             "script": job.script_text or "",
+            "title": metadata.get("title", job.topic),
+            "story_arc": metadata.get("story_arc", ["problem", "stakes", "solution", "how", "payoff"]),
         }
     }
 

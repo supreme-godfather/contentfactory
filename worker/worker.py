@@ -18,6 +18,21 @@ def _escape_font_path(value: str) -> str:
     return value.replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
+def _scene_text(job: dict[str, str]) -> list[str]:
+    paragraphs = [
+        " ".join(part.split())
+        for part in (job.get("script") or "").split("\n")
+        if part.strip()
+    ]
+    if not paragraphs:
+        paragraphs = [job["topic"]]
+    return paragraphs[:5]
+
+
+def _filter_path(value: Path) -> str:
+    return str(value.resolve()).replace("\\", "/").replace(":", r"\:")
+
+
 def render_video(job: dict[str, str], output_dir: Path) -> str:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -29,6 +44,7 @@ def render_video(job: dict[str, str], output_dir: Path) -> str:
     font = job.get("font_path")
     if not font:
         for candidate in (
+            r"C:\Windows\Fonts\NirmalaUI.ttf",
             r"C:\Windows\Fonts\arial.ttf",
             r"C:\Windows\Fonts\segoeui.ttf",
             r"C:\Windows\Fonts\calibri.ttf",
@@ -36,13 +52,34 @@ def render_video(job: dict[str, str], output_dir: Path) -> str:
             if Path(candidate).exists():
                 font = candidate
                 break
-    drawtext = f"drawtext=text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
-    if font and Path(font).exists():
-        drawtext = f"drawtext=fontfile='{_escape_font_path(font)}':text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
+    font_option = f":fontfile='{_escape_font_path(font)}'" if font and Path(font).exists() else ""
+    scene_texts = _scene_text(job)
+    scene_seconds = duration / len(scene_texts)
+    text_dir = output_dir / f"{job['id']}-captions"
+    text_dir.mkdir(parents=True, exist_ok=True)
+    filters = [
+        f"drawtext=text='{topic}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=180{font_option}"
+    ]
+    for index, caption in enumerate(scene_texts):
+        caption_path = text_dir / f"scene-{index}.txt"
+        caption_path.write_text(caption, encoding="utf-8")
+        start = index * scene_seconds
+        end = (index + 1) * scene_seconds
+        filters.append(
+            "drawbox=x=60:y=h-430:w=w-120:h=250:color=black@0.55:t=fill:"
+            f"enable='between(t,{start:.3f},{end:.3f})'"
+        )
+        filters.append(
+            "drawtext="
+            f"textfile='{_filter_path(caption_path)}':fontcolor=white:fontsize=42:"
+            "line_spacing=12:x=(w-text_w)/2:y=(h-text_h)/2:"
+            f"enable='between(t,{start:.3f},{end:.3f})'{font_option}"
+        )
+    video_filter = ",".join(filters)
     command = [
         ffmpeg, "-y", "-f", "lavfi", "-i",
         f"color=c=0x111827:s=1080x1920:r=30:d={duration}",
-        "-vf", drawtext, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-vf", video_filter, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-movflags", "+faststart", str(output_path),
     ]
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
