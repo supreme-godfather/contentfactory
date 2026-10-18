@@ -62,8 +62,9 @@ def generate_content(job_id: str) -> ContentJob:
             },
             ensure_ascii=False,
         )
-        job.stage = "quality_check"
-        job.status = "awaiting_approval"
+        # The RDP must render the media before the operator can approve it.
+        job.stage = "render"
+        job.status = "queued"
         job.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(job)
@@ -80,8 +81,8 @@ def approve_job(job_id: str, approver_id: int) -> ContentJob:
         job = session.get(ContentJob, job_id)
         if not job:
             raise ValueError("Job not found")
-        if job.status not in {"queued", "awaiting_approval"}:
-            raise ValueError("Only queued or awaiting-approval jobs can be approved")
+        if job.status != "awaiting_approval":
+            raise ValueError("Job must finish rendering before approval")
         job.status = "approved"
         job.approval_version = job.content_version
         job.updated_at = datetime.now(timezone.utc)
@@ -104,7 +105,7 @@ def publish_job(job_id: str) -> ContentJob:
             topic=job.topic,
             script=job.script_text,
             metadata_json=job.metadata_json,
-            render_path=job.render_path or f"mock://{job.id}",
+            render_path=job.render_path,
         )
         if not report.passed:
             raise ValueError(f"Quality gate blocked publication: {', '.join(report.blockers)}")
@@ -118,7 +119,7 @@ def publish_job(job_id: str) -> ContentJob:
             result = get_publisher(platform).publish(
                 title=metadata["title"],
                 description=metadata["description"],
-                media_path=job.render_path or f"mock://{job.id}",
+                media_path=job.render_path,
             )
             if record is None:
                 record = PublicationRecord(job_id=job.id, platform=platform, idempotency_key=key)

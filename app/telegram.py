@@ -122,6 +122,7 @@ def _safe_error_text(exc: Exception) -> str:
         "Job is not",
         "Quality gate blocked",
         "Only queued",
+        "Job must finish rendering",
         "Topic must contain",
         "Platform must be",
     )
@@ -574,7 +575,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                 (
                     f"✨ <b>Preview created</b>\n{_divider()}\n\n"
                     f"{_format_job_card(job)}\n\n"
-                    f"⚠️ Review the content carefully before approval.\n"
+                    f"🎞️ The RDP worker is rendering the MP4 before approval.\n"
                     f"{_divider()}"
                 ),
                 _job_keyboard(job.id),

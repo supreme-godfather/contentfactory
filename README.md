@@ -41,6 +41,8 @@ during the initial security stage.
 - Owner IDs are required for Telegram actions.
 - The app starts paused.
 - Generate creates a queued content job, but does not publish.
+- The RDP worker renders queued jobs and uploads the MP4 to Railway before the
+  job becomes available for approval.
 - Approval is bound to the immutable content version.
 - Publishing is blocked while paused, when mock mode is disabled without an
   integration, or when a job is not approved.
