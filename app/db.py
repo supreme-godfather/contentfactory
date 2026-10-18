@@ -104,6 +104,18 @@ class PlatformAccount(Base):
     daily_limit: Mapped[int] = mapped_column(Integer, default=3)
 
 
+class OAuthCredential(Base):
+    __tablename__ = "oauth_credentials"
+
+    provider: Mapped[str] = mapped_column(String(40), primary_key=True)
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    refresh_token_encrypted: Mapped[str] = mapped_column(Text)
+    token_type: Mapped[str] = mapped_column(String(40), default="Bearer")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 class PublicationRecord(Base):
     __tablename__ = "publication_records"
 

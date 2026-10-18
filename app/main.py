@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import json
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -12,6 +13,7 @@ from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
 from .services import approve_job, claim_render_job, complete_render_job, create_job, fail_render_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
 from .telegram import configure_webhook, handle_update
+from .youtube_oauth import connection_status, create_authorization_url, exchange_code
 
 
 @asynccontextmanager
@@ -55,7 +57,29 @@ def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
         "youtube_enabled": settings.youtube_enabled,
         "instagram_enabled": settings.instagram_enabled,
         "daily_publication_limit": settings.max_daily_publications,
+        "youtube_oauth": connection_status(),
     }
+
+
+@app.get("/api/youtube/oauth/authorize")
+def youtube_authorize(_: None = Depends(require_admin_api_token)) -> dict[str, str]:
+    try:
+        return {"authorization_url": create_authorization_url()}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/oauth/youtube/callback")
+async def youtube_callback(code: str | None = None, state: str | None = None, error: str | None = None) -> dict[str, str]:
+    if error:
+        raise HTTPException(status_code=400, detail=f"Google OAuth denied access: {error}")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing OAuth code or state")
+    try:
+        await exchange_code(code, state)
+    except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "authorized", "provider": "youtube"}
 
 
 @app.get("/api/jobs")

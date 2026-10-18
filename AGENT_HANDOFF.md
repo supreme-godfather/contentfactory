@@ -26,6 +26,23 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### Antigravity — 2026-10-18
+
+- **Task:** Telegram bot UI overhaul, error sanitisation, and Telegram test coverage (plus Content Engine security fixes).
+- **Status:** done
+- **Files changed:**
+  - `factory/app/telegram.py` (redesigned UX, dynamic status keyboard, emoji status indicators, visual score progress bars, detailed job cards, safe error masking)
+  - `factory/tests/test_telegram.py` (new test suite with 40 tests covering formatting, safe errors, keyboards, message builders, command dispatch, and callbacks)
+  - `content engine/api_server.py` (path traversal prevention via `_safe_filename()`, modern FastAPI `lifespan` handler, improved exception logging)
+- **Tests run:**
+  - `pytest tests/ -v` in `factory/` → 44 passed, 0 failed (4 existing + 40 new).
+- **Behavioral changes:**
+  - Telegram bot now features rich visual layouts with dividers, stage badges (`QUEUED`, `RENDERING`, `AWAITING APPROVAL`, etc.), and visual score bars (`[■■■■■□□□□□]`).
+  - Telegram main keyboard dynamically toggles between `⏸ Pause Factory` and `▶ Resume Factory` based on current live state.
+  - Safe error handler conceals unhandled exception internals from Telegram users while logging full tracebacks on the server.
+  - Added full callback query navigation (`status`, `queue`, `menu`, `refresh`, `preview`).
+- **Next action for Copilot:** Verify Railway PostgreSQL migration/connectivity, configure YouTube/Meta OAuth credentials when ready, and proceed with TTS / Remotion video worker integration.
+
 ### Copilot — 2026-10-18
 
 - **Status:** The unified repository is

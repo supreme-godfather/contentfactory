@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     telegram_owner_ids: str = "1112018699"
     telegram_language: str = "english"
     youtube_enabled: bool = False
+    youtube_client_id: str = ""
+    youtube_client_secret: str = ""
+    youtube_redirect_uri: str = ""
+    token_encryption_key: str = ""
     instagram_enabled: bool = False
     max_daily_publications: int = 6
     max_concurrent_jobs: int = 1
