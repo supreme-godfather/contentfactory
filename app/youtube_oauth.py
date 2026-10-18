@@ -141,3 +141,45 @@ def connection_status() -> dict[str, object]:
         "expires_at": credential.expires_at.isoformat() if credential and credential.expires_at else None,
         "scopes": credential.scope if credential else None,
     }
+
+
+def get_valid_access_token() -> str:
+    """Return a usable access token, refreshing it shortly before expiry."""
+    settings = get_settings()
+    cipher = _fernet()
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as session:
+        credential = session.get(OAuthCredential, "youtube")
+        if credential is None:
+            raise RuntimeError("YouTube is not authorized")
+        if credential.expires_at and credential.expires_at > now + timedelta(seconds=60):
+            return cipher.decrypt(credential.access_token_encrypted.encode()).decode()
+        refresh_token = cipher.decrypt(credential.refresh_token_encrypted.encode()).decode()
+
+    if not settings.youtube_client_id or not settings.youtube_client_secret:
+        raise RuntimeError("YouTube OAuth client is not configured")
+    with httpx.Client(timeout=20) as client:
+        response = client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id": settings.youtube_client_id,
+                "client_secret": settings.youtube_client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise RuntimeError("Google did not return a refreshed access token")
+    expires_at = now + timedelta(seconds=int(payload.get("expires_in", 3600)))
+    with SessionLocal() as session:
+        credential = session.get(OAuthCredential, "youtube")
+        if credential is None:
+            raise RuntimeError("YouTube authorization was removed")
+        credential.access_token_encrypted = cipher.encrypt(access_token.encode()).decode()
+        credential.expires_at = expires_at
+        credential.token_type = payload.get("token_type", credential.token_type)
+        session.commit()
+    return access_token

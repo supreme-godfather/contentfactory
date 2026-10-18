@@ -47,13 +47,15 @@ during the initial security stage.
 - Duplicate publication is prevented by an idempotency key.
 - Pause/resume state is persisted in the database.
 - A real worker-rendered MP4 and quality gate are required before publication.
+- The RDP uploads rendered MP4 files to the API before approval, so Railway
+  never depends on a Windows-local file path.
 - The Telegram webhook requires `TELEGRAM_WEBHOOK_SECRET` when configured.
 - Telegram control buttons and messages are English-only by default; generated
   channel content can remain Hindi.
 
 ## Next implementation stage
 
-Add Hindi TTS and caption timing behind the existing MP4 renderer, then
-implement YouTube OAuth and Meta's official Instagram publishing flow. Do not
-enable either integration until account permissions and test publication are
-verified.
+Hindi TTS and caption timing remain behind the existing MP4 renderer.
+YouTube now has token refresh and official resumable upload support, but keep
+`YOUTUBE_PRIVACY_STATUS=private` and `APP_PAUSED=true` for the first test.
+Only enable live YouTube publishing after a private test upload succeeds.

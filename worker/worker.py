@@ -42,7 +42,8 @@ def render_video(job: dict[str, str], output_dir: Path) -> str:
 def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
     worker_id = socket.gethostname()
     headers = {"X-Worker-Token": token}
-    with httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=20) as client:
+    timeout = httpx.Timeout(300.0, connect=20.0)
+    with httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=timeout) as client:
         while True:
             heartbeat = client.post("/api/worker/heartbeat", params={"worker_id": worker_id})
             heartbeat.raise_for_status()
@@ -54,6 +55,13 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                 print(f"Claimed {job['id']} · {job['topic']}", flush=True)
                 try:
                     render_path = render_video(job, output_dir)
+                    with Path(render_path).open("rb") as media:
+                        uploaded = client.post(
+                            f"/api/worker/{job['id']}/media",
+                            files={"file": (Path(render_path).name, media, "video/mp4")},
+                        )
+                    uploaded.raise_for_status()
+                    render_path = uploaded.json()["render_path"]
                     completed = client.post(
                         f"/api/worker/{job['id']}/complete",
                         params={"worker_id": worker_id, "render_path": render_path},

@@ -1,13 +1,14 @@
 from contextlib import asynccontextmanager
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from .config import get_settings
-from .db import init_db
+from .db import ContentJob, SessionLocal, init_db
 from .discovery import add_analytics_snapshot, add_trend, analytics_summary, list_trends
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
@@ -232,6 +233,45 @@ def worker_complete(job_id: str, worker_id: str, render_path: str, _: None = Dep
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+@app.post("/api/worker/{job_id}/media")
+def worker_upload_media(
+    job_id: str,
+    file: UploadFile = File(...),
+    _: None = Depends(require_worker_token),
+) -> dict[str, str]:
+    if file.content_type not in {"video/mp4", "application/octet-stream"}:
+        raise HTTPException(status_code=415, detail="Only MP4 media is accepted")
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job or job.status != "rendering":
+            raise HTTPException(status_code=409, detail="Job is not currently rendering")
+    settings = get_settings()
+    media_root = Path(settings.media_root).resolve()
+    media_root.mkdir(parents=True, exist_ok=True)
+    destination = (media_root / f"{job_id}.mp4").resolve()
+    if destination.parent != media_root:
+        raise HTTPException(status_code=400, detail="Invalid media destination")
+    max_bytes = settings.max_media_mb * 1024 * 1024
+    total = 0
+    try:
+        with destination.open("wb") as output:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    destination.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail="Media file exceeds the configured size limit")
+                output.write(chunk)
+    finally:
+        file.file.close()
+    if total < 1024:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Media file is empty or invalid")
+    return {"render_path": str(destination)}
 
 
 @app.post("/api/worker/{job_id}/fail")
