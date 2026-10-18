@@ -53,6 +53,12 @@ def generate_content(job_id: str) -> ContentJob:
                 ),
                 "hashtags": ["#Hindi", "#Explainer", "#LearnWithEliteExplainer"],
                 "disclosure": "AI-assisted production; facts require source verification.",
+                "format": "vertical_short",
+                "duration_seconds": 60,
+                "story_arc": ["hook", "problem", "stakes", "solution", "payoff"],
+                "visual_direction": "original Hindi explainer visuals; no creator copying",
+                "caption_policy": "burned captions required for muted playback",
+                "approval_required": True,
             },
             ensure_ascii=False,
         )
