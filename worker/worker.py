@@ -14,6 +14,10 @@ def _escape_drawtext(value: str) -> str:
     return value.replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'").replace("%", r"\%").replace("\n", " ")
 
 
+def _escape_font_path(value: str) -> str:
+    return value.replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+
+
 def render_video(job: dict[str, str], output_dir: Path) -> str:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -34,7 +38,7 @@ def render_video(job: dict[str, str], output_dir: Path) -> str:
                 break
     drawtext = f"drawtext=text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
     if font and Path(font).exists():
-        drawtext = f"drawtext=fontfile='{_escape_drawtext(font)}':text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
+        drawtext = f"drawtext=fontfile='{_escape_font_path(font)}':text='{topic}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2"
     command = [
         ffmpeg, "-y", "-f", "lavfi", "-i",
         f"color=c=0x111827:s=1080x1920:r=30:d={duration}",
