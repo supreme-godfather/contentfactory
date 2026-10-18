@@ -12,7 +12,13 @@ from .security import require_owner
 from .discovery import analytics_summary, list_trends
 from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, set_paused
 from .youtube_oauth import connection_status, create_authorization_url, sync_channel_analytics
-from .provider_credentials import provider_status, select_provider, set_provider_secret
+from .provider_credentials import (
+    media_generation_enabled,
+    provider_status,
+    select_provider,
+    set_media_generation_enabled,
+    set_provider_secret,
+)
 
 logger = logging.getLogger(__name__)
 _pending_provider_setup: dict[int, str] = {}
@@ -202,6 +208,10 @@ def _provider_keyboard() -> dict[str, list[list[dict[str, str]]]]:
         "inline_keyboard": [
             [_button(label("google", "☁️ Google Cloud"), "provider:google")],
             [_button(label("openai", "🤖 OpenAI"), "provider:openai")],
+            [_button(
+                "⏸️ Disable AI media" if media_generation_enabled() else "🚀 Enable AI media",
+                "media:disable" if media_generation_enabled() else "media:enable",
+            )],
             [_button("🔙 Back to menu", "menu")],
         ]
     }
@@ -213,6 +223,7 @@ def _provider_message() -> str:
     return (
         f"🧩 <b>Media providers</b>\n{_divider()}\n\n"
         f"🎯 Selected: <b>{selected}</b>\n"
+        f"⚙️ AI media generation: {'🟢 enabled' if media_generation_enabled() else '⚪ disabled'}\n"
         f"☁️ Google Cloud: {'✅ configured' if status['google'] else '⚪ not configured'}\n"
         f"🤖 OpenAI: {'✅ configured' if status['openai'] else '⚪ not configured'}\n\n"
         "Choose a provider to add or replace its credential. "
@@ -598,6 +609,14 @@ async def handle_update(update: dict[str, Any]) -> None:
                     ),
                     _back_keyboard(),
                 )
+
+            elif data == "media:enable":
+                set_media_generation_enabled(True)
+                await send_message(chat_id, "🚀 <b>AI media generation enabled</b>", _provider_keyboard())
+
+            elif data == "media:disable":
+                set_media_generation_enabled(False)
+                await send_message(chat_id, "⏸️ <b>AI media generation disabled</b>", _provider_keyboard())
 
             elif data.startswith("approve:"):
                 job_id = data.split(":", 1)[1]

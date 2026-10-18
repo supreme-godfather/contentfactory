@@ -60,3 +60,21 @@ def select_provider(provider: str) -> None:
         else:
             setting.value = provider
         session.commit()
+
+
+def media_generation_enabled() -> bool:
+    with SessionLocal() as session:
+        setting = session.get(FactorySetting, "media_generation_enabled")
+        if setting is not None:
+            return setting.value == "true"
+    return get_settings().media_generation_enabled or get_settings().google_media_enabled
+
+
+def set_media_generation_enabled(enabled: bool) -> None:
+    with SessionLocal() as session:
+        setting = session.get(FactorySetting, "media_generation_enabled")
+        if setting is None:
+            session.add(FactorySetting(key="media_generation_enabled", value=str(enabled).lower()))
+        else:
+            setting.value = str(enabled).lower()
+        session.commit()

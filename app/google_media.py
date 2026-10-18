@@ -83,10 +83,12 @@ def generate_image(prompt: str, destination: Path) -> None:
 
 def create_job_assets(job_id: str, topic: str, script: str, media_root: Path) -> dict[str, str]:
     settings = get_settings()
-    if not (settings.media_generation_enabled or settings.google_media_enabled):
-        return {}
-    from .provider_credentials import provider_status
+    from .provider_credentials import media_generation_enabled
 
+    if not media_generation_enabled():
+        return {}
+
+    from .provider_credentials import provider_status
     if provider_status()["selected"] == "openai":
         return _create_openai_assets(job_id, topic, script, media_root)
     media_root.mkdir(parents=True, exist_ok=True)
