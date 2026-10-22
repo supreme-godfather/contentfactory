@@ -30,6 +30,7 @@ class ContentJob(Base):
     claimed_by: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -166,3 +167,5 @@ def init_db() -> None:
             connection.execute(text("ALTER TABLE content_jobs ADD COLUMN claimed_by VARCHAR(120)"))
         if "lease_expires_at" not in columns:
             connection.execute(text("ALTER TABLE content_jobs ADD COLUMN lease_expires_at TIMESTAMP"))
+        if "retry_count" not in columns:
+            connection.execute(text("ALTER TABLE content_jobs ADD COLUMN retry_count INTEGER DEFAULT 0"))

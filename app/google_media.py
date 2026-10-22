@@ -89,8 +89,20 @@ def create_job_assets(job_id: str, topic: str, script: str, media_root: Path) ->
         return {}
 
     from .provider_credentials import provider_status
-    if provider_status()["selected"] == "openai":
+    selected = provider_status()["selected"]
+    if selected == "openai":
         return _create_openai_assets(job_id, topic, script, media_root)
+    if selected != "google":
+        # The owner selected a provider whose generation endpoint is not
+        # connected yet (key stored in Telegram). Never crash generation:
+        # the job still gets its script, storyboard and render brief.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Provider %s is selected but not wired for media generation yet; skipping AI media",
+            selected,
+        )
+        return {}
     media_root.mkdir(parents=True, exist_ok=True)
     voiceover = media_root / f"{job_id}-voiceover.mp3"
     image = media_root / f"{job_id}-scene-1.png"

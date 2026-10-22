@@ -10,6 +10,13 @@ from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, Wor
 from .google_media import create_job_assets
 from .publishers import get_publisher
 from .quality import validate_content
+from .scriptwriter import build_script
+from .storyboard import (
+    STYLE_ANCHOR,
+    build_storyboard,
+    caption_cues,
+    estimate_duration_seconds,
+)
 
 
 def create_job(topic: str, platform: str, brand: str = "learn_with_elite_explainer") -> ContentJob:
@@ -38,27 +45,43 @@ def generate_content(job_id: str) -> ContentJob:
             raise ValueError("Job not found")
         if job.status not in {"queued", "rendering"}:
             raise ValueError("Job is not available for content generation")
-        job.script_text = (
-            f"क्या आपने कभी सोचा है कि {job.topic} के पीछे असली कहानी क्या है?\n\n"
-            f"इस वीडियो में हम {job.topic} को आसान हिंदी में समझेंगे। "
-            "मुख्य तथ्यों, प्रभाव और सीख को संक्षेप में देखिए।\n\n"
-            "ऐसी जानकारी के लिए YouTube पर Learn With Elite Explainer को subscribe "
-            "और Instagram पर sheoran_studios को follow करें।"
-        )
+        from .hq import get_format, get_format_key, get_niche_label
+
+        format_key = get_format_key()
+        format_info = get_format()
+        niche_label = get_niche_label()
+        job.script_text = build_script(job.topic, job.brand, format=format_key, niche=niche_label)
+        storyboard = build_storyboard(job.topic, job.script_text)
+        cues = caption_cues(job.script_text)
+        estimated_seconds = estimate_duration_seconds(job.script_text)
         metadata = {
                 "title": f"{job.topic} की असली कहानी | आसान हिंदी में",
                 "description": (
                     f"{job.topic} को आसान हिंदी में समझिए।\n\n"
+                    "💬 आपकी राय क्या है? Comment में ज़रूर बताइए।\n\n"
                     "YouTube: @LEARNWITHELITEEXPLAINER\n"
-                    "Instagram: @sheoran_studios"
+                    "Instagram: @sheoran_studios\n\n"
+                    "#Hindi #Explainer #LearnWithEliteExplainer"
                 ),
                 "hashtags": ["#Hindi", "#Explainer", "#LearnWithEliteExplainer"],
+                "tags": [
+                    job.topic,
+                    f"{job.topic} hindi",
+                    "hindi explainer",
+                    "learn with elite explainer",
+                ],
                 "disclosure": "AI-assisted production; facts require source verification.",
-                "format": "vertical_short",
-                "duration_seconds": 60,
-                "story_arc": ["hook", "problem", "stakes", "solution", "payoff"],
+                "format": format_info["format_code"],
+                "aspect_ratio": format_info["aspect_ratio"],
+                "niche": niche_label,
+                "duration_seconds": estimated_seconds,
+                "target_duration_seconds": format_info["target_duration_seconds"],
+                "story_arc": [scene["stage"] for scene in storyboard],
+                "storyboard": storyboard,
+                "style_anchor": STYLE_ANCHOR,
                 "visual_direction": "original Hindi explainer visuals; no creator copying",
                 "caption_policy": "burned captions required for muted playback",
+                "caption_cues": cues,
                 "approval_required": True,
             }
         assets = create_job_assets(job.id, job.topic, job.script_text, Path(get_settings().media_root))
@@ -96,6 +119,45 @@ def approve_job(job_id: str, approver_id: int) -> ContentJob:
         return job
 
 
+def retry_job(job_id: str) -> ContentJob:
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.status != "failed":
+            raise ValueError("Only failed jobs can be retried")
+        job.status = "queued"
+        job.stage = "render" if (job.script_text and job.metadata_json) else "topic"
+        job.error_message = None
+        job.claimed_by = None
+        job.lease_expires_at = None
+        job.retry_count = (job.retry_count or 0) + 1
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def requeue_failed_jobs(max_retries: int) -> int:
+    with SessionLocal() as session:
+        failed_ids = list(
+            session.scalars(
+                select(ContentJob.id).where(
+                    ContentJob.status == "failed",
+                    ContentJob.retry_count < max_retries,
+                )
+            )
+        )
+    count = 0
+    for job_id in failed_ids:
+        try:
+            retry_job(job_id)
+            count += 1
+        except ValueError:
+            continue
+    return count
+
+
 def publish_job(job_id: str) -> ContentJob:
     settings = get_settings()
     with SessionLocal() as session:
@@ -104,6 +166,20 @@ def publish_job(job_id: str) -> ContentJob:
             raise ValueError("Job not found")
         if is_paused():
             raise ValueError("Factory is paused")
+        # Enforce the configured daily publication cap (UTC day).
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        from sqlalchemy import func
+
+        published_count = session.scalar(
+            select(func.count(PublicationRecord.id)).where(
+                PublicationRecord.status == "published",
+                PublicationRecord.created_at >= day_start,
+            )
+        ) or 0
+        from .hq import get_daily_publish_limit
+
+        if published_count >= get_daily_publish_limit():
+            raise ValueError("Daily publication limit reached")
         if job.status != "approved" or job.approval_version != job.content_version:
             raise ValueError("Job requires approval for its current content version")
         report = validate_content(
@@ -179,6 +255,18 @@ def claim_render_job(worker_id: str) -> ContentJob | None:
     lease_until = now.timestamp() + get_settings().worker_lease_seconds
     lease_expires = datetime.fromtimestamp(lease_until, timezone.utc)
     with SessionLocal() as session:
+        # Enforce the configured concurrency cap: count live rendering leases.
+        from sqlalchemy import func
+
+        active_rendering = session.scalar(
+            select(func.count(ContentJob.id)).where(
+                ContentJob.status == "rendering",
+                ContentJob.lease_expires_at.is_not(None),
+                ContentJob.lease_expires_at > now,
+            )
+        ) or 0
+        if active_rendering >= max(1, get_settings().max_concurrent_jobs):
+            return None
         job = session.scalar(
             select(ContentJob)
             .where(

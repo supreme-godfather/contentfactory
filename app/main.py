@@ -8,12 +8,13 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from .automation import automation_enabled, automation_loop, run_automation_cycle, set_automation_enabled
 from .config import get_settings
 from .db import ContentJob, SessionLocal, init_db
-from .discovery import add_analytics_snapshot, add_trend, analytics_summary, list_trends
+from .discovery import add_analytics_snapshot, add_trend, analytics_recommendations, analytics_summary, list_trends, monetisation_readiness
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
-from .services import approve_job, claim_render_job, complete_render_job, create_job, fail_render_job, generate_content, is_paused, list_jobs, publish_job, worker_heartbeat
+from .services import approve_job, claim_render_job, complete_render_job, create_job, fail_render_job, generate_content, is_paused, list_jobs, publish_job, retry_job, worker_heartbeat
 from .telegram import configure_webhook, handle_update
 from .youtube_oauth import connection_status, create_authorization_url, exchange_code, sync_channel_analytics
 
@@ -21,8 +22,18 @@ from .youtube_oauth import connection_status, create_authorization_url, exchange
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    asyncio.create_task(configure_webhook())
-    yield
+    webhook_task = asyncio.create_task(configure_webhook())
+    automation_task = asyncio.create_task(automation_loop())
+    try:
+        yield
+    finally:
+        for task in (webhook_task, automation_task):
+            task.cancel()
+        for task in (webhook_task, automation_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="Hindi Content Factory", version="0.1.0", lifespan=lifespan)
@@ -156,6 +167,44 @@ def analytics(_: None = Depends(require_admin_api_token)) -> list[dict[str, obje
     return analytics_summary()
 
 
+@app.get("/api/analytics/recommendations")
+def analytics_recs(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    return analytics_recommendations()
+
+
+@app.get("/api/analytics/monetisation")
+def analytics_monetisation(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    return monetisation_readiness()
+
+
+@app.post("/api/automation/run")
+def automation_run(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    return run_automation_cycle()
+
+
+@app.get("/api/automation/status")
+def automation_status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    settings = get_settings()
+    return {
+        "enabled": automation_enabled(),
+        "interval_seconds": settings.automation_interval_seconds,
+        "min_trend_score": settings.automation_min_trend_score,
+        # YouTube-only for now; see app/automation.py.
+        "platform": "youtube",
+        "paused": is_paused(),
+    }
+
+
+class AutomationToggleRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/automation/toggle")
+def automation_toggle(request: AutomationToggleRequest, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    set_automation_enabled(request.enabled)
+    return {"enabled": automation_enabled(), "platform": "youtube"}
+
+
 @app.post("/api/youtube/analytics/sync")
 def youtube_analytics_sync(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
     try:
@@ -178,7 +227,7 @@ def quality(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str
             metadata_json=job.metadata_json,
             render_path=job.render_path,
         )
-    return {"passed": report.passed, "score": report.score, "blockers": report.blockers}
+    return {"passed": report.passed, "score": report.score, "blockers": report.blockers, "warnings": report.warnings}
 
 
 @app.post("/api/jobs/{job_id}/approve")
@@ -188,6 +237,15 @@ def approve(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str
     except (ValueError, HTTPException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "approval_version": job.approval_version}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    try:
+        job = retry_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "retry_count": job.retry_count}
 
 
 @app.post("/api/jobs/{job_id}/publish")
@@ -230,6 +288,8 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "brand": job.brand,
             "platform": job.platform,
             "duration_seconds": metadata.get("duration_seconds", 60),
+            "aspect_ratio": metadata.get("aspect_ratio", "9:16"),
+            "format": metadata.get("format", "vertical_short"),
             "script": job.script_text or "",
             "title": metadata.get("title", job.topic),
             "story_arc": metadata.get("story_arc", ["problem", "stakes", "solution", "how", "payoff"]),
@@ -284,6 +344,16 @@ def worker_upload_media(
     if destination.parent != media_root:
         raise HTTPException(status_code=400, detail="Invalid media destination")
     max_bytes = settings.max_media_mb * 1024 * 1024
+    storage_cap_bytes = max(0, settings.max_storage_gb) * 1024 * 1024 * 1024
+    existing_destination_size = destination.stat().st_size if destination.exists() else 0
+    existing_total = 0
+    for existing_file in media_root.rglob("*"):
+        if existing_file.is_file():
+            try:
+                existing_total += existing_file.stat().st_size
+            except OSError:
+                continue
+    existing_total -= existing_destination_size
     total = 0
     try:
         with destination.open("wb") as output:
@@ -295,6 +365,9 @@ def worker_upload_media(
                 if total > max_bytes:
                     destination.unlink(missing_ok=True)
                     raise HTTPException(status_code=413, detail="Media file exceeds the configured size limit")
+                if existing_total + total > storage_cap_bytes:
+                    destination.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail="Storage limit exceeded")
                 output.write(chunk)
     finally:
         file.file.close()

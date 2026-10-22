@@ -1,11 +1,16 @@
 from dataclasses import dataclass
 import json
+import time
 from pathlib import Path
 
 import httpx
 
 from .config import get_settings
 from .youtube_oauth import get_valid_access_token
+
+# Instagram container polling — module constants so tests can speed them up.
+INSTAGRAM_POLL_INTERVAL_SECONDS = 3
+INSTAGRAM_MAX_POLLS = 10
 
 
 @dataclass(frozen=True)
@@ -123,10 +128,93 @@ class YouTubePublisher(Publisher):
             return PublicationResult(status="blocked", detail=f"YouTube publication failed: {str(exc)[:300]}")
 
 
+class InstagramPublisher(Publisher):
+    """Publish a Reel via the official Meta Graph API.
+
+    Safe/blocked by default: requires INSTAGRAM_ENABLED plus a configured
+    Instagram user id and access token, and — because the Graph API fetches
+    the video itself — a publicly accessible http(s) video URL. A local
+    render file on this server cannot be uploaded directly.
+    """
+
+    platform = "instagram"
+
+    def publish(self, *, title: str, description: str, media_path: str) -> PublicationResult:
+        settings = get_settings()
+        if not settings.instagram_enabled:
+            return PublicationResult(status="blocked", detail="Instagram publishing is disabled.")
+        if not settings.instagram_user_id or not settings.instagram_access_token:
+            return PublicationResult(
+                status="blocked",
+                detail="Instagram is not configured: INSTAGRAM_USER_ID and INSTAGRAM_ACCESS_TOKEN must be set.",
+            )
+        if not media_path or not media_path.startswith(("http://", "https://")):
+            return PublicationResult(
+                status="blocked",
+                detail=(
+                    "Instagram requires a publicly accessible video URL: the Graph API fetches "
+                    "video_url itself, so a local render file cannot be uploaded directly. Host "
+                    "the rendered MP4 at a public URL first, then publish."
+                ),
+            )
+        version = settings.instagram_graph_version or "v21.0"
+        base = f"https://graph.facebook.com/{version}"
+        token = settings.instagram_access_token
+        caption = f"{title}\n\n{description}"
+        try:
+            with httpx.Client(timeout=60) as client:
+                create = client.post(
+                    f"{base}/{settings.instagram_user_id}/media",
+                    params={
+                        "access_token": token,
+                        "media_type": "REELS",
+                        "video_url": media_path,
+                        "caption": caption,
+                    },
+                )
+                create.raise_for_status()
+                container_id = create.json().get("id")
+                if not container_id:
+                    return PublicationResult(status="blocked", detail="Instagram returned no media container ID.")
+                # Wait for the container to finish processing.
+                finished = False
+                for _ in range(max(1, INSTAGRAM_MAX_POLLS)):
+                    status_resp = client.get(
+                        f"{base}/{container_id}",
+                        params={"access_token": token, "fields": "status_code"},
+                    )
+                    status_resp.raise_for_status()
+                    if status_resp.json().get("status_code") == "FINISHED":
+                        finished = True
+                        break
+                    if INSTAGRAM_POLL_INTERVAL_SECONDS > 0:
+                        time.sleep(INSTAGRAM_POLL_INTERVAL_SECONDS)
+                if not finished:
+                    return PublicationResult(status="blocked", detail="Instagram media container did not finish processing in time.")
+                publish_resp = client.post(
+                    f"{base}/{settings.instagram_user_id}/media_publish",
+                    params={"access_token": token, "creation_id": container_id},
+                )
+                publish_resp.raise_for_status()
+                remote_id = publish_resp.json().get("id")
+            if not remote_id:
+                return PublicationResult(status="blocked", detail="Instagram returned no published media ID.")
+            return PublicationResult(
+                status="published",
+                remote_id=str(remote_id),
+                remote_url=f"https://www.instagram.com/reel/{remote_id}/",
+                detail="Published through the official Meta Graph API.",
+            )
+        except httpx.HTTPError as exc:
+            return PublicationResult(status="blocked", detail=f"Instagram publication failed: {str(exc)[:300]}")
+
+
 def get_publisher(platform: str) -> Publisher:
     settings = get_settings()
     if settings.mock_publishing:
         return MockPublisher(platform)
+    if platform == "instagram" and settings.instagram_enabled:
+        return InstagramPublisher()
     if platform == "youtube" and settings.youtube_enabled:
         return YouTubePublisher()
     return DisabledPublisher(platform)

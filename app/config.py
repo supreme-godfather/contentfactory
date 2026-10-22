@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     google_image_model: str = "imagen-3.0-generate-002"
     media_provider: str = "google"
     instagram_enabled: bool = False
+    instagram_user_id: str = ""
+    instagram_access_token: str = ""
+    instagram_graph_version: str = "v21.0"
+    automation_enabled: bool = False
+    automation_interval_seconds: int = 300
+    automation_min_trend_score: int = 70
+    # YouTube-only for now (user decision, 2026-10-22). Instagram automation
+    # will be enabled later; the automation engine enforces this regardless
+    # of the configured value until then.
+    automation_platform: str = "youtube"
+    automation_max_jobs_per_cycle: int = 1
+    automation_max_retries: int = 3
     max_daily_publications: int = 6
     max_concurrent_jobs: int = 1
     max_storage_gb: int = 4

@@ -9,10 +9,24 @@ import httpx
 
 from .config import get_settings
 from .security import require_owner
-from .discovery import analytics_summary, list_trends
-from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, set_paused
+from .discovery import analytics_recommendations, analytics_summary, list_trends
+from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, retry_job, set_paused
 from .youtube_oauth import connection_status, create_authorization_url, sync_channel_analytics
+from .hq import (
+    DAILY_LIMIT_PRESETS,
+    FORMATS,
+    NICHE_PRESETS,
+    get_daily_publish_limit,
+    get_format,
+    get_format_key,
+    get_niche_key,
+    get_niche_label,
+    set_daily_publish_limit,
+    set_format,
+    set_niche,
+)
 from .provider_credentials import (
+    PROVIDER_INFO,
     media_generation_enabled,
     provider_status,
     select_provider,
@@ -47,17 +61,149 @@ def _button(text: str, callback_data: str) -> dict[str, str]:
 
 
 def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
-    """Dynamic main menu keyboard — shows the correct pause/resume state."""
+    """Main menu — deliberately small: two buttons per row, grouped by task.
+
+    Create / review on top, monitoring in the middle, and the two control
+    surfaces (Automation panel, Controls panel) plus the pause/resume
+    master switch at the bottom. Everything else lives inside those
+    panels, so the main menu stays readable on a phone.
+    """
+    paused = is_paused()
+    toggle = _button("▶️ Resume", "resume") if paused else _button("⏸️ Pause", "pause")
+    return {
+        "inline_keyboard": [
+            [_button("✨ Create", "create"), _button("📥 Queue", "queue")],
+            [_button("📊 Status", "status"), _button("🔥 Trends", "trends")],
+            [_button("📈 Analytics", "analytics"), _button("⚙️ Controls", "controls")],
+            [_button("🤖 Automation", "automation_panel"), toggle],
+        ]
+    }
+
+
+def _controls_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    """Controls panel — the headquarters: factory switch, channel settings
+    (niche, format, daily limit), providers, and YouTube connection."""
     paused = is_paused()
     toggle = _button("▶️ Resume factory", "resume") if paused else _button("⏸️ Pause factory", "pause")
     return {
         "inline_keyboard": [
-            [_button("✨ New content", "create"), _button("📥 Review queue", "queue")],
-            [_button("📊 Status dashboard", "status"), _button("🔥 Trend radar", "trends")],
-            [_button("📈 Analytics", "analytics"), _button("🔄 Sync YouTube", "sync_analytics"), _button("🧩 Providers", "providers")],
-            [_button("🔗 Connect YouTube", "youtube_auth"), _button("🔄 Refresh", "refresh"), toggle],
+            [toggle],
+            [_button("🎯 Niche", "hq:niche"), _button("🎞 Format", "hq:format")],
+            [_button("📤 Daily upload limit", "hq:limit"), _button("🧩 Providers", "providers")],
+            [_button("🔗 Connect YouTube", "youtube_auth"), _button("🔄 Sync YouTube", "sync_analytics")],
+            [_button("🔄 Refresh status", "refresh"), _button("🔙 Back to menu", "menu")],
         ]
     }
+
+
+def _niche_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    current = get_niche_key()
+    rows = [
+        [_button(f"{'✅ ' if key == current else ''}{label}", f"niche:{key}")]
+        for key, label in NICHE_PRESETS.items()
+    ]
+    rows.append([_button("🔙 Back to Controls", "controls")])
+    return {"inline_keyboard": rows}
+
+
+def _build_niche_message() -> str:
+    return (
+        f"🎯 <b>Channel niche</b>\n{_divider()}\n\n"
+        f"  Current: <b>{html.escape(get_niche_label())}</b>\n\n"
+        "The niche shapes every script the factory writes — its facts, "
+        "examples and tone. Tap a niche to switch instantly; new jobs use "
+        "it right away, nothing to redeploy.\n\n"
+        f"{_divider()}"
+    )
+
+
+def _format_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    current = get_format_key()
+    rows = [
+        [_button(f"{'✅ ' if key == current else ''}{info['label']}", f"format:{key}")]
+        for key, info in FORMATS.items()
+    ]
+    rows.append([_button("🔙 Back to Controls", "controls")])
+    return {"inline_keyboard": rows}
+
+
+def _build_format_message() -> str:
+    info = get_format()
+    return (
+        f"🎞 <b>Default format</b>\n{_divider()}\n\n"
+        f"  Current: <b>{html.escape(str(info['label']))}</b>\n"
+        f"  Aspect: <b>{info['aspect_ratio']}</b> · Target: "
+        f"<b>{info['target_duration_seconds']}s</b> · Script: "
+        f"<b>{info['script_words']} words</b>\n\n"
+        "Both formats are fully supported. Shorts grow the channel fast; "
+        "long-form earns more per view once monetised. New jobs are "
+        "generated in the format you pick here.\n\n"
+        f"{_divider()}"
+    )
+
+
+def _limit_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    current = get_daily_publish_limit()
+    buttons = [
+        _button(f"{'✅ ' if n == current else ''}{n}/day", f"limit:{n}")
+        for n in DAILY_LIMIT_PRESETS
+    ]
+    rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
+    rows.append([_button("🔙 Back to Controls", "controls")])
+    return {"inline_keyboard": rows}
+
+
+def _build_limit_message() -> str:
+    return (
+        f"📤 <b>Daily upload limit</b>\n{_divider()}\n\n"
+        f"  Current limit: <b>{get_daily_publish_limit()} video(s) per day</b>\n\n"
+        "Publishing stops for the day once this many videos are published "
+        "(UTC day). The automation also respects it — it can prepare more, "
+        "but nothing extra goes out. Change it any time; it applies "
+        "immediately.\n\n"
+        f"{_divider()}"
+    )
+
+
+def _automation_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    """Automation panel: live on/off state, run-once, and the toggle."""
+    from .automation import automation_enabled
+
+    enabled = automation_enabled()
+    toggle = (
+        _button("🔴 Turn automation OFF", "automation:disable")
+        if enabled
+        else _button("🟢 Turn automation ON", "automation:enable")
+    )
+    return {
+        "inline_keyboard": [
+            [_button("▶️ Run one cycle now", "automation:run")],
+            [toggle],
+            [_button("🔙 Back to menu", "menu")],
+        ]
+    }
+
+
+def _build_automation_message() -> str:
+    """Automation panel text: what it does, its limits, and its state."""
+    from .automation import automation_enabled
+
+    settings = get_settings()
+    enabled = automation_enabled()
+    paused = is_paused()
+    return (
+        f"🤖 <b>Automation</b>\n{_divider()}\n\n"
+        f"  State: <b>{'🟢 ON' if enabled else '⚪ OFF'}</b>"
+        f"  ·  Factory: <b>{'⏸️ Paused' if paused else '▶️ Running'}</b>\n"
+        f"  Platform: <b>YouTube only</b>\n"
+        f"  Every: <b>{settings.automation_interval_seconds}s</b>"
+        f"  ·  Min trend score: <b>{settings.automation_min_trend_score}</b>"
+        f"  ·  Max per cycle: <b>{settings.automation_max_jobs_per_cycle}</b>\n\n"
+        "Each cycle requeues failed renders, then turns the best trend "
+        "into a generated YouTube job. It never approves or publishes — "
+        "that stays with you.\n\n"
+        f"{_divider()}"
+    )
 
 
 def _job_keyboard(job_id: str) -> dict[str, list[list[dict[str, str]]]]:
@@ -73,7 +219,10 @@ def _job_keyboard(job_id: str) -> dict[str, list[list[dict[str, str]]]]:
                 _button("📤 Publish now", f"publish:{job_id}"),
                 _button("🔍 Quality check", f"quality:{job_id}"),
             ],
-            [_button("🔙 Back to menu", "menu")],
+            [
+                _button("🔁 Retry", f"retry:{job_id}"),
+                _button("🔙 Back to menu", "menu"),
+            ],
         ]
     }
 
@@ -159,6 +308,7 @@ def _safe_error_text(exc: Exception) -> str:
         "Job is not",
         "Quality gate blocked",
         "Only queued",
+        "Only failed",
         "Job must finish rendering",
         "Topic must contain",
         "Platform must be",
@@ -198,37 +348,83 @@ async def delete_message(chat_id: int, message_id: int) -> None:
 
 
 def _provider_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    """One button per registered provider — any provider can be added
+    with an API key, and the active one can be switched at any time."""
     status = provider_status()
     selected = status["selected"]
-    def label(name: str, title: str) -> str:
-        marker = " ✅ selected" if selected == name else ""
-        ready = " ✅" if status[name] else " ⚪"
-        return f"{title}{ready}{marker}"
-    return {
-        "inline_keyboard": [
-            [_button(label("google", "☁️ Google Cloud"), "provider:google")],
-            [_button(label("openai", "🤖 OpenAI"), "provider:openai")],
-            [_button(
-                "⏸️ Disable AI media" if media_generation_enabled() else "🚀 Enable AI media",
-                "media:disable" if media_generation_enabled() else "media:enable",
-            )],
-            [_button("🔙 Back to menu", "menu")],
-        ]
-    }
+    rows = []
+    for name, info in PROVIDER_INFO.items():
+        marker = " 🎯" if selected == name else ""
+        ready = " ✅" if status.get(name) else " ⚪"
+        rows.append([_button(f"{info['label']}{ready}{marker}", f"provider:{name}")])
+    rows.append([_button(
+        "⏸️ Disable AI media" if media_generation_enabled() else "🚀 Enable AI media",
+        "media:disable" if media_generation_enabled() else "media:enable",
+    )])
+    rows.append([_button("🔙 Back to Controls", "controls")])
+    return {"inline_keyboard": rows}
 
 
 def _provider_message() -> str:
     status = provider_status()
-    selected = html.escape(str(status["selected"]))
+    selected_name = str(status["selected"])
+    selected_label = html.escape(str(PROVIDER_INFO.get(selected_name, {}).get("label", selected_name)))
+    lines = [
+        f"🧩 <b>Media providers</b>",
+        _divider(),
+        "",
+        f"🎯 Active: <b>{selected_label}</b>",
+        f"⚙️ AI media generation: {'🟢 enabled' if media_generation_enabled() else '⚪ disabled'}",
+        "",
+    ]
+    for name, info in PROVIDER_INFO.items():
+        state = "✅ key added" if status.get(name) else "⚪ no key yet"
+        lines.append(f"  {info['label']} — {state}")
+    lines.extend([
+        "",
+        "Tap any provider to add its API key or switch to it. If a "
+        "provider runs out of credits or hits its limit, just switch to "
+        "another one here — no redeploy, no downtime.",
+        "Keys are stored encrypted and the message is deleted immediately.",
+        "",
+        "⚠️ Never send YouTube, Telegram, Railway, or database secrets here.",
+    ])
+    return "\n".join(lines)
+
+
+def _provider_detail_keyboard(name: str) -> dict[str, list[list[dict[str, str]]]]:
+    status = provider_status()
+    configured = bool(status.get(name))
+    selected = status["selected"] == name
+    rows = []
+    if configured and not selected:
+        rows.append([_button("🎯 Use this provider now", f"provider_use:{name}")])
+    rows.append([_button(
+        "🔐 Replace API key" if configured else "🔐 Add API key",
+        f"provider_key:{name}",
+    )])
+    rows.append([_button("🔙 All providers", "providers")])
+    return {"inline_keyboard": rows}
+
+
+def _provider_detail_message(name: str) -> str:
+    info = PROVIDER_INFO[name]
+    status = provider_status()
+    configured = bool(status.get(name))
+    selected = status["selected"] == name
+    wiring = (
+        "🟢 Generation route connected — this provider can generate media now."
+        if info["wired"]
+        else "🟡 Key storage ready — its generation endpoint gets connected when you "
+        "activate the account; until then the factory safely skips AI media for it "
+        "and still produces the script, storyboard and render brief."
+    )
     return (
-        f"🧩 <b>Media providers</b>\n{_divider()}\n\n"
-        f"🎯 Selected: <b>{selected}</b>\n"
-        f"⚙️ AI media generation: {'🟢 enabled' if media_generation_enabled() else '⚪ disabled'}\n"
-        f"☁️ Google Cloud: {'✅ configured' if status['google'] else '⚪ not configured'}\n"
-        f"🤖 OpenAI: {'✅ configured' if status['openai'] else '⚪ not configured'}\n\n"
-        "Choose a provider to add or replace its credential. "
-        "The bot deletes the credential message immediately and stores it encrypted.\n\n"
-        "⚠️ Never send YouTube, Telegram, Railway, or database secrets here."
+        f"🧩 <b>{html.escape(str(info['label']))}</b>\n{_divider()}\n\n"
+        f"  Key: <b>{'✅ added (encrypted)' if configured else '⚪ not added yet'}</b>\n"
+        f"  Active: <b>{'🎯 yes — this is the current provider' if selected else 'no'}</b>\n"
+        f"  {wiring}\n\n"
+        f"{_divider()}"
     )
 
 
@@ -280,6 +476,8 @@ async def configure_webhook() -> None:
                 {"command": "analytics", "description": "📈 Performance analytics"},
                 {"command": "sync", "description": "🔄 Sync YouTube analytics"},
                 {"command": "providers", "description": "🧩 Configure media providers"},
+                {"command": "automation", "description": "🤖 Run one automation cycle"},
+                {"command": "retry", "description": "🔁 Retry a failed job"},
                 {"command": "generate", "description": "✨ Create a Hindi preview"},
                 {"command": "pause", "description": "⏸️ Pause the factory"},
                 {"command": "resume", "description": "▶️ Resume the factory"},
@@ -300,21 +498,15 @@ def _build_start_message() -> str:
     youtube_state = "🟢 Connected" if youtube["authorized"] else "⚪ Not connected"
     factory_state = "⏸️ Paused" if is_paused() else "▶️ Running"
     return (
-        f"🎬 <b>AI Stories Island · Content Factory</b>\n"
-        f"<i>Private creator command center</i>\n"
+        f"🎬 <b>Content Factory</b>\n"
         f"{_divider()}\n"
+        f"  Factory: <b>{factory_state}</b>\n"
+        f"  YouTube: {youtube_state}\n"
+        f"  Mode: {'Safe preview (mock)' if settings.mock_publishing else 'Live'}\n"
+        f"  Publishing: 🔒 Approval required, always\n"
         f"\n"
-        f"✨ Your Hindi content factory is online.\n"
-        f"\n"
-        f"  {factory_state}  Factory control\n"
-        f"  🔒  Approval-gated publishing\n"
-        f"  🧠  Original, trend-aware stories\n"
-        f"  🎞️  RDP render + caption pipeline\n"
-        f"  ▶️  YouTube: {youtube_state}\n"
-        f"  🧪  Mode: {'Safe preview' if settings.mock_publishing else 'Live gated'}\n"
-        f"\n"
-        f"{_divider()}\n"
-        f"Choose an action below to control the factory from your phone."
+        f"Pick an action below, or type /help for commands.\n"
+        f"{_divider()}"
     )
 
 
@@ -326,7 +518,6 @@ def _build_status_message() -> str:
     mock_icon = "🧪" if settings.mock_publishing else "🚀"
     mock_text = "Mock mode" if settings.mock_publishing else "Live mode"
     yt_icon = "✅" if settings.youtube_enabled else "❌"
-    ig_icon = "✅" if settings.instagram_enabled else "❌"
 
     jobs = list_jobs()
     active_jobs = [j for j in jobs if j.status in ("queued", "rendering", "awaiting_approval")]
@@ -342,12 +533,12 @@ def _build_status_message() -> str:
         f"  {mock_icon}  Publisher: <b>{mock_text}</b>\n"
         f"  ⏳  Pipeline load: <code>{load_bar}</code> ({len(active_jobs)}/{max_concurrent} active)\n"
         f"\n"
-        f"  <b>Platform status</b>\n"
-        f"  {yt_icon}  YouTube\n"
-        f"  {ig_icon}  Instagram\n"
+        f"  <b>Platform</b>\n"
+        f"  {yt_icon}  YouTube — active platform\n"
+        f"  ⚪  Instagram — coming later\n"
         f"\n"
         f"  <b>Limits</b>\n"
-        f"  📤  Daily quota: {settings.max_daily_publications}\n"
+        f"  📤  Daily quota: {get_daily_publish_limit()} (set in Controls)\n"
         f"  ⚙️  Max concurrent: {settings.max_concurrent_jobs}\n"
         f"  💾  Storage cap: {settings.max_storage_gb} GB\n"
         f"\n"
@@ -438,6 +629,15 @@ def _build_analytics_message() -> str:
             f"      {eng_icon} Engagement: <b>{item['engagement_rate']}%</b>  ·  ⏱️ {item['watch_seconds']:,}s watched"
         )
         lines.append("")
+    try:
+        recs = analytics_recommendations().get("recommendations") or []
+    except Exception:
+        recs = []
+    if recs:
+        lines.append("💡 <b>Recommendations</b>")
+        for rec in recs:
+            lines.append(f"  • {html.escape(str(rec))}")
+        lines.append("")
     lines.append(_divider())
     return "\n".join(lines)
 
@@ -447,10 +647,12 @@ def _build_help_message() -> str:
         f"📚 <b>Command Reference</b>\n"
         f"{_divider()}\n"
         f"\n"
-        f"<b>🎬 Content creation</b>\n"
-        f"  /generate &lt;topic&gt; — Create a Hindi preview\n"
+        f"<b>🎬 Content (YouTube)</b>\n"
+        f"  /generate &lt;topic&gt; — Create a Hindi YouTube preview\n"
         f"  /approve &lt;job-id&gt; — Lock content for publishing\n"
         f"  /publish &lt;job-id&gt; — Publish approved content\n"
+        f"  /automation — Run one automation cycle now (or open the 🤖 Automation panel to turn it on/off)\n"
+        f"  /retry &lt;job-id&gt; — Retry a failed job\n"
         f"\n"
         f"<b>📊 Monitoring</b>\n"
         f"  /status — System health dashboard\n"
@@ -460,10 +662,11 @@ def _build_help_message() -> str:
         f"  /sync — Sync official YouTube analytics\n"
         f"  /providers — Configure image and voice providers\n"
         f"\n"
-        f"<b>⚙️ Controls</b>\n"
+        f"<b>⚙️ Controls (headquarters)</b>\n"
         f"  /pause — Pause all automation\n"
         f"  /resume — Resume automation\n"
         f"  /menu — Show main menu\n"
+        f"  ⚙️ Controls panel — niche, format (Shorts/Long), daily upload limit, providers: everything is set there\n"
         f"\n"
         f"<b>💡 Tips</b>\n"
         f"  • All content requires approval before publishing\n"
@@ -476,19 +679,48 @@ def _build_help_message() -> str:
 
 
 def _build_controls_message() -> str:
+    paused = is_paused()
+    info = get_format()
     return (
-        f"⚙️ <b>Controls</b>\n"
+        f"⚙️ <b>Controls — your headquarters</b>\n"
         f"{_divider()}\n"
         f"\n"
-        f"<b>Create content</b>\n"
-        f"  /generate &lt;topic&gt;\n"
+        f"  Factory: <b>{'⏸️ Paused' if paused else '▶️ Running'}</b>\n"
+        f"  🎯 Niche: <b>{html.escape(get_niche_label())}</b>\n"
+        f"  🎞 Format: <b>{html.escape(str(info['label']))}</b>\n"
+        f"  📤 Daily upload limit: <b>{get_daily_publish_limit()}/day</b>\n"
         f"\n"
-        f"<b>Review &amp; approve</b>\n"
-        f"  /approve &lt;job-id&gt;  — after careful review\n"
-        f"  /publish &lt;job-id&gt;  — safe publisher mode\n"
+        f"<b>Quick commands</b>\n"
+        f"  /generate &lt;topic&gt; — create a YouTube preview\n"
+        f"  /approve &lt;job-id&gt; — approve after review\n"
+        f"  /publish &lt;job-id&gt; — publish an approved job\n"
         f"\n"
-        f"<b>Factory control</b>\n"
-        f"  Use the buttons below to pause/resume.\n"
+        f"Everything is controlled from the buttons below — niche, "
+        f"format, upload limits, providers and the factory switch. "
+        f"Changes apply immediately, no redeploy.\n"
+        f"\n"
+        f"{_divider()}"
+    )
+
+
+def _build_create_message() -> str:
+    return (
+        f"✨ <b>Create content</b>\n"
+        f"{_divider()}\n"
+        f"\n"
+        f"Send:\n"
+        f"  <code>/generate &lt;topic&gt;</code>\n"
+        f"\n"
+        f"Example: <code>/generate चंद्रयान मिशन की कहानी</code>\n"
+        f"\n"
+        f"A YouTube preview is created in the current format "
+        f"({html.escape(str(get_format()['label']))}, niche: "
+        f"{html.escape(get_niche_label())}) and sent to the render worker. "
+        f"Nothing is published without your approval. Change format or "
+        f"niche any time in ⚙️ Controls.\n"
+        f"\n"
+        f"Or let Automation do it: open 🤖 Automation and run a cycle — "
+        f"it builds a job from the top trend.\n"
         f"\n"
         f"{_divider()}"
     )
@@ -528,8 +760,41 @@ async def handle_update(update: dict[str, Any]) -> None:
                     _keyboard(),
                 )
 
-            elif data in {"create", "controls"}:
-                await send_message(chat_id, _build_controls_message(), _keyboard())
+            elif data == "create":
+                await send_message(chat_id, _build_create_message(), _keyboard())
+
+            elif data == "controls":
+                await send_message(chat_id, _build_controls_message(), _controls_keyboard())
+
+            elif data == "automation_panel":
+                await send_message(chat_id, _build_automation_message(), _automation_keyboard())
+
+            elif data in {"automation:enable", "automation:disable"}:
+                from .automation import set_automation_enabled
+
+                set_automation_enabled(data == "automation:enable")
+                await send_message(chat_id, _build_automation_message(), _automation_keyboard())
+
+            elif data == "automation:run":
+                from .automation import run_automation_cycle
+
+                outcome = run_automation_cycle()
+                if outcome.get("skipped_reason"):
+                    summary = f"⏭️ Automation skipped: {html.escape(str(outcome['skipped_reason']))}"
+                else:
+                    summary = (
+                        f"🤖 <b>Automation cycle complete</b>\n"
+                        f"   Platform: YouTube\n"
+                        f"   🔥 Trends considered: {outcome.get('trends_considered', 0)}\n"
+                        f"   ✨ Jobs created: {outcome.get('jobs_created', 0)}\n"
+                        f"   📝 Jobs generated: {outcome.get('jobs_generated', 0)}\n"
+                        f"   🔁 Jobs requeued: {outcome.get('jobs_requeued', 0)}"
+                    )
+                await send_message(
+                    chat_id,
+                    f"{summary}\n\nNothing was published — approval is still required.\n\n{_divider()}",
+                    _automation_keyboard(),
+                )
 
             elif data in {"help", "menu"}:
                 if data == "menu":
@@ -589,16 +854,77 @@ async def handle_update(update: dict[str, Any]) -> None:
             elif data == "refresh":
                 await send_message(chat_id, _build_status_message(), _keyboard())
 
+            elif data == "hq:niche":
+                await send_message(chat_id, _build_niche_message(), _niche_keyboard())
+
+            elif data.startswith("niche:"):
+                try:
+                    label = set_niche(data.split(":", 1)[1])
+                    await send_message(
+                        chat_id,
+                        f"🎯 <b>Niche set:</b> {html.escape(label)}\n\nNew jobs will be written for this niche.",
+                        _niche_keyboard(),
+                    )
+                except ValueError:
+                    await send_message(chat_id, "⚠️ Unknown niche.", _niche_keyboard())
+
+            elif data == "hq:format":
+                await send_message(chat_id, _build_format_message(), _format_keyboard())
+
+            elif data.startswith("format:"):
+                try:
+                    info = set_format(data.split(":", 1)[1])
+                    await send_message(
+                        chat_id,
+                        f"🎞 <b>Default format set:</b> {html.escape(str(info['label']))}\n\nNew jobs will be generated in this format.",
+                        _format_keyboard(),
+                    )
+                except ValueError:
+                    await send_message(chat_id, "⚠️ Unknown format.", _format_keyboard())
+
+            elif data == "hq:limit":
+                await send_message(chat_id, _build_limit_message(), _limit_keyboard())
+
+            elif data.startswith("limit:"):
+                try:
+                    limit = set_daily_publish_limit(int(data.split(":", 1)[1]))
+                    await send_message(
+                        chat_id,
+                        f"📤 <b>Daily upload limit set:</b> {limit} video(s) per day.\n\nIt applies immediately — publishing stops at the limit.",
+                        _limit_keyboard(),
+                    )
+                except ValueError:
+                    await send_message(chat_id, "⚠️ Invalid limit.", _limit_keyboard())
+
             elif data == "providers":
                 await send_message(chat_id, _provider_message(), _provider_keyboard())
 
             elif data.startswith("provider:"):
                 provider = data.split(":", 1)[1]
-                if provider not in {"google", "openai"}:
+                if provider not in PROVIDER_INFO:
+                    await send_message(chat_id, "⚠️ Unsupported provider.", _provider_keyboard())
+                    return
+                await send_message(chat_id, _provider_detail_message(provider), _provider_detail_keyboard(provider))
+
+            elif data.startswith("provider_use:"):
+                provider = data.split(":", 1)[1]
+                if provider not in PROVIDER_INFO:
+                    await send_message(chat_id, "⚠️ Unsupported provider.", _provider_keyboard())
+                    return
+                select_provider(provider)
+                await send_message(
+                    chat_id,
+                    f"🎯 <b>{html.escape(str(PROVIDER_INFO[provider]['label']))} is now the active provider.</b>\n\nGeneration uses it from the next job onward.",
+                    _provider_detail_keyboard(provider),
+                )
+
+            elif data.startswith("provider_key:"):
+                provider = data.split(":", 1)[1]
+                if provider not in PROVIDER_INFO:
                     await send_message(chat_id, "⚠️ Unsupported provider.", _provider_keyboard())
                     return
                 _pending_provider_setup[chat_id] = provider
-                label = "Google service-account JSON" if provider == "google" else "OpenAI API key"
+                label = str(PROVIDER_INFO[provider]["secret_label"])
                 await send_message(
                     chat_id,
                     (
@@ -645,6 +971,20 @@ async def handle_update(update: dict[str, Any]) -> None:
                     _back_keyboard(),
                 )
 
+            elif data.startswith("retry:"):
+                job_id = data.split(":", 1)[1]
+                job = retry_job(job_id)
+                await send_message(
+                    chat_id,
+                    (
+                        f"🔁 <b>Job requeued for retry</b>\n{_divider()}\n\n"
+                        f"{_format_job_card(job)}\n\n"
+                        f"Retry attempt: {job.retry_count}\n"
+                        f"{_divider()}"
+                    ),
+                    _job_keyboard(job.id),
+                )
+
             elif data.startswith("publish:"):
                 job_id = data.split(":", 1)[1]
                 job = publish_job(job_id)
@@ -677,6 +1017,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                     )
                 gate_icon = "✅" if report.passed else "🚫"
                 blockers_text = "\n".join(f"    ⚠️ {b}" for b in report.blockers) if report.blockers else "    None"
+                warnings_text = "\n".join(f"    💡 {w}" for w in report.warnings) if report.warnings else "    None"
                 await send_message(
                     chat_id,
                     (
@@ -684,6 +1025,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                         f"  {gate_icon}  Gate: <b>{'PASSED' if report.passed else 'BLOCKED'}</b>\n"
                         f"  📊  Score: <b>{report.score}/100</b>\n\n"
                         f"  <b>Blockers:</b>\n{blockers_text}\n\n"
+                        f"  <b>Warnings (fix to earn better):</b>\n{warnings_text}\n\n"
                         f"{_divider()}"
                     ),
                     _job_keyboard(job_id),
@@ -709,10 +1051,18 @@ async def handle_update(update: dict[str, Any]) -> None:
                         await delete_message(chat_id, message_id)
                     except Exception:
                         logger.warning("Could not delete provider credential message", exc_info=True)
+                provider_label = html.escape(str(PROVIDER_INFO.get(provider, {}).get("label", provider.title())))
+                wiring_note = (
+                    "Media generation will use this provider when AI media is enabled."
+                    if PROVIDER_INFO.get(provider, {}).get("wired")
+                    else "Its key is stored safely. The generation endpoint for this provider "
+                    "gets connected when you activate the account — you can switch back to a "
+                    "connected provider here at any time."
+                )
                 await send_message(
                     chat_id,
-                    f"✅ <b>{html.escape(provider.title())} selected and encrypted</b>\n\n"
-                    "Media generation will use this provider when MEDIA_GENERATION_ENABLED=true.",
+                    f"✅ <b>{provider_label} — key saved (encrypted) and set as active</b>\n\n"
+                    f"{wiring_note}",
                     _provider_keyboard(),
                 )
             except Exception:
@@ -772,7 +1122,8 @@ async def handle_update(update: dict[str, Any]) -> None:
             if not topic:
                 await send_message(chat_id, "⚠️ Please provide a topic: /generate &lt;topic&gt;", _keyboard())
                 return
-            job = generate_content(create_job(topic, "both").id)
+            # YouTube-only for now; Instagram creation comes later.
+            job = generate_content(create_job(topic, "youtube").id)
             await send_message(
                 chat_id,
                 (
@@ -827,6 +1178,44 @@ async def handle_update(update: dict[str, Any]) -> None:
                     f"{_divider()}"
                 ),
                 _keyboard(),
+            )
+
+        elif text == "/automation":
+            from .automation import run_automation_cycle
+
+            outcome = run_automation_cycle()
+            if outcome.get("skipped_reason"):
+                summary = f"⏭️ Automation skipped: {html.escape(str(outcome['skipped_reason']))}"
+            else:
+                summary = (
+                    f"🤖 <b>Automation cycle complete</b>\n"
+                    f"   Platform: YouTube\n"
+                    f"   🔥 Trends considered: {outcome.get('trends_considered', 0)}\n"
+                    f"   ✨ Jobs created: {outcome.get('jobs_created', 0)}\n"
+                    f"   📝 Jobs generated: {outcome.get('jobs_generated', 0)}\n"
+                    f"   🔁 Jobs requeued: {outcome.get('jobs_requeued', 0)}"
+                )
+            await send_message(
+                chat_id,
+                f"{summary}\n\nContent still requires rendering and approval — nothing was published.\n\n{_divider()}",
+                _automation_keyboard(),
+            )
+
+        elif text.startswith("/retry "):
+            job_id = text[7:].strip()
+            if not job_id:
+                await send_message(chat_id, "⚠️ Usage: /retry &lt;job-id&gt;", _keyboard())
+                return
+            job = retry_job(job_id)
+            await send_message(
+                chat_id,
+                (
+                    f"🔁 <b>Job requeued for retry</b>\n{_divider()}\n\n"
+                    f"{_format_job_card(job)}\n\n"
+                    f"Retry attempt: {job.retry_count}\n"
+                    f"{_divider()}"
+                ),
+                _job_keyboard(job.id),
             )
 
         elif text == "/pause":
