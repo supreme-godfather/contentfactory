@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import logging
+import time
 from uuid import uuid4
 
 from sqlalchemy import DateTime, Integer, String, Text, create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -140,6 +143,7 @@ class PublicationRecord(Base):
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 database_url = settings.database_url
 if not database_url.strip():
     database_url = "sqlite:///./data/factory.db"
@@ -149,13 +153,28 @@ elif database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
 if database_url.startswith("sqlite:///"):
     Path("data").mkdir(exist_ok=True)
-connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+connect_args = (
+    {"check_same_thread": False}
+    if database_url.startswith("sqlite")
+    else {"connect_timeout": 10}
+)
 engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def init_db() -> None:
-    Base.metadata.create_all(engine)
+    for attempt in range(1, 13):
+        try:
+            Base.metadata.create_all(engine)
+            break
+        except OperationalError:
+            if attempt == 12:
+                raise
+            logger.warning(
+                "Database is not ready; retrying initialization (%d/12)",
+                attempt,
+            )
+            time.sleep(5)
     # Keep the small initial deployment upgradeable without a migration runner.
     # Future schema changes should move to versioned migrations.
     from sqlalchemy import inspect, text

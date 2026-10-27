@@ -154,6 +154,11 @@ def build_script(
         f"end with exactly these closing lines: '{CLOSING_LINES}'"
     )
     try:
+        from .provider_credentials import get_provider_secret
+
+        api_key = get_provider_secret("openai")
+        if not api_key:
+            return fallback
         response = httpx.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
