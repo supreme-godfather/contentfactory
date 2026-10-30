@@ -1,27 +1,30 @@
 """Automation engine: periodically turn top trends into generated jobs.
 
-YouTube-only for now (Instagram automation comes later). Safety: off by
-default (AUTOMATION_ENABLED=false, toggleable at runtime from Telegram or
-the API), does nothing while the factory is paused, and NEVER approves or
-publishes — generated jobs still go through rendering, the quality gate
-and human approval as usual.
+Instagram Reel automation is supported. Safety: off by default
+(AUTOMATION_ENABLED=false, toggleable at runtime from Telegram or the API),
+does nothing while the factory is paused, and NEVER approves or publishes —
+generated jobs still go through rendering, the quality gate and human approval.
 """
 import asyncio
 import logging
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from .config import get_settings
 from .db import FactorySetting, SessionLocal, TrendCandidate
-from .services import create_job, generate_content, is_paused, requeue_failed_jobs
+from .services import (
+    create_job,
+    generate_content,
+    is_paused,
+    mark_due_schedules_notified,
+    mark_schedule_notified,
+    requeue_failed_jobs,
+)
 
 logger = logging.getLogger(__name__)
 
-# Automation is YouTube-only for now (user decision, 2026-10-22). Instagram
-# automation will be added later; until then this is enforced in code, not
-# just by configuration, so a stray AUTOMATION_PLATFORM value cannot create
-# Instagram or cross-platform jobs.
-AUTOMATION_PLATFORM = "youtube"
+AUTOMATION_PLATFORM = "instagram"
 
 
 def automation_enabled() -> bool:
@@ -100,12 +103,41 @@ def run_automation_cycle() -> dict[str, object]:
 
 
 async def automation_loop() -> None:
+    next_automation_at = 0.0
+    loop = asyncio.get_running_loop()
     while True:
         settings = get_settings()
-        if automation_enabled():
+        now = loop.time()
+        if automation_enabled() and now >= next_automation_at:
             try:
                 result = await asyncio.to_thread(run_automation_cycle)
                 logger.info("Automation cycle: %s", result)
             except Exception:
                 logger.exception("Automation cycle failed")
-        await asyncio.sleep(max(30, settings.automation_interval_seconds))
+            next_automation_at = now + max(30, settings.automation_interval_seconds)
+
+        try:
+            due = await asyncio.to_thread(mark_due_schedules_notified)
+            if due and settings.telegram_bot_token and settings.owner_ids:
+                from .telegram import _button, send_message
+
+                for job_id, topic, scheduled_at in due:
+                    for owner_id in settings.owner_ids:
+                        await send_message(
+                            owner_id,
+                            (
+                                f"⏰ <b>Your Reel is ready to publish</b>\n"
+                                f"{topic}\n"
+                                f"Scheduled reminder: {scheduled_at.astimezone(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M IST')}\n"
+                                "Publishing requires your explicit tap. No automatic post was made."
+                            ),
+                            {
+                                "inline_keyboard": [[
+                                    _button("📤 Publish approved Reel", f"publish:{job_id}")
+                                ]]
+                            },
+                        )
+                    mark_schedule_notified(job_id)
+        except Exception:
+            logger.exception("Scheduled Telegram reminders failed")
+        await asyncio.sleep(30)

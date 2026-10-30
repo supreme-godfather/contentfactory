@@ -55,15 +55,29 @@ def generate_content(job_id: str) -> ContentJob:
         cues = caption_cues(job.script_text)
         estimated_seconds = estimate_duration_seconds(job.script_text)
         metadata = {
-                "title": f"{job.topic} की असली कहानी | आसान हिंदी में",
+                "title": (
+                    f"{job.topic} | जो सच कोई नहीं बताता"
+                    if format_key == "reel"
+                    else f"{job.topic} की असली कहानी | आसान हिंदी में"
+                ),
                 "description": (
                     f"{job.topic} को आसान हिंदी में समझिए।\n\n"
                     "💬 आपकी राय क्या है? Comment में ज़रूर बताइए।\n\n"
                     "YouTube: @LEARNWITHELITEEXPLAINER\n"
-                    "Instagram: @sheoran_studios\n\n"
-                    "#Hindi #Explainer #LearnWithEliteExplainer"
+                    "Original Hindi Reel · follow for more stories\n\n"
+                    "#Hindi #Psychology #Mindset #History #Reels"
+                    if format_key == "reel"
+                    else (
+                        "YouTube: @LEARNWITHELITEEXPLAINER\n"
+                        "Instagram: @sheoran_studios\n\n"
+                        "#Hindi #Explainer #LearnWithEliteExplainer"
+                    )
                 ),
-                "hashtags": ["#Hindi", "#Explainer", "#LearnWithEliteExplainer"],
+                "hashtags": (
+                    ["#Hindi", "#Psychology", "#Mindset", "#History", "#Reels"]
+                    if format_key == "reel"
+                    else ["#Hindi", "#Explainer", "#LearnWithEliteExplainer"]
+                ),
                 "tags": [
                     job.topic,
                     f"{job.topic} hindi",
@@ -79,7 +93,16 @@ def generate_content(job_id: str) -> ContentJob:
                 "story_arc": [scene["stage"] for scene in storyboard],
                 "storyboard": storyboard,
                 "style_anchor": STYLE_ANCHOR,
-                "visual_direction": "original Hindi explainer visuals; no creator copying",
+                "visual_direction": (
+                    "dark cinematic faceless Reel; high-contrast captions; original visuals; no creator copying"
+                    if format_key == "reel"
+                    else "original Hindi explainer visuals; no creator copying"
+                ),
+                "profile": (
+                    get_settings().reel_profile_name
+                    if format_key == "reel"
+                    else "hindi_explainer"
+                ),
                 "caption_policy": "burned captions required for muted playback",
                 "caption_cues": cues,
                 "approval_required": True,
@@ -136,6 +159,109 @@ def retry_job(job_id: str) -> ContentJob:
         session.commit()
         session.refresh(job)
         return job
+
+
+def cancel_job(job_id: str) -> ContentJob:
+    """Cancel work that has not been published or is actively rendering."""
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.status in {"published", "rendering"}:
+            raise ValueError("Published or actively rendering jobs cannot be cancelled")
+        if job.status == "cancelled":
+            return job
+        job.status = "cancelled"
+        job.stage = "cancelled"
+        job.claimed_by = None
+        job.lease_expires_at = None
+        job.approval_version = None
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def revise_job(job_id: str) -> ContentJob:
+    """Invalidate approval and queue a fresh script/render for operator revision."""
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.status in {"published", "rendering", "cancelled"}:
+            raise ValueError("This job cannot be revised in its current state")
+        job.content_version += 1
+        job.approval_version = None
+        job.render_path = None
+        job.status = "queued"
+        job.stage = "topic"
+        job.error_message = None
+        job.claimed_by = None
+        job.lease_expires_at = None
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def schedule_job(job_id: str, scheduled_at: datetime) -> ContentJob:
+    if scheduled_at.tzinfo is None:
+        raise ValueError("Scheduled time must include a timezone")
+    when = scheduled_at.astimezone(timezone.utc)
+    if when <= datetime.now(timezone.utc):
+        raise ValueError("Scheduled time must be in the future")
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.status != "approved" or job.approval_version != job.content_version:
+            raise ValueError("Approve the current Reel version before scheduling")
+        job.scheduled_at = when
+        job.schedule_notified_at = None
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def mark_due_schedules_notified() -> list[tuple[str, str, datetime]]:
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as session:
+        jobs = list(
+            session.scalars(
+                select(ContentJob).where(
+                    ContentJob.status == "approved",
+                    ContentJob.approval_version == ContentJob.content_version,
+                    ContentJob.scheduled_at.is_not(None),
+                    ContentJob.scheduled_at <= now,
+                    ContentJob.schedule_notified_at.is_(None),
+                )
+            )
+        )
+        result = []
+        for job in jobs:
+            scheduled_at = job.scheduled_at or now
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+            result.append((job.id, job.topic, scheduled_at))
+        return result
+
+
+def mark_schedule_notified(job_id: str) -> None:
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        scheduled_at = job.scheduled_at if job is not None else None
+        if scheduled_at is not None and scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        if (
+            job is not None
+            and job.status == "approved"
+            and job.approval_version == job.content_version
+            and scheduled_at is not None
+            and scheduled_at <= datetime.now(timezone.utc)
+        ):
+            job.schedule_notified_at = datetime.now(timezone.utc)
+            session.commit()
 
 
 def requeue_failed_jobs(max_retries: int) -> int:
@@ -248,6 +374,23 @@ def worker_heartbeat(worker_id: str) -> None:
             lease.status = "online"
             lease.last_seen_at = now
         session.commit()
+
+
+def worker_status() -> list[dict[str, object]]:
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as session:
+        leases = list(session.scalars(select(WorkerLease).order_by(WorkerLease.last_seen_at.desc())))
+        return [
+            {
+                "worker_id": lease.worker_id,
+                "online": (
+                    (now - lease.last_seen_at.replace(tzinfo=timezone.utc)).total_seconds()
+                    <= max(120, get_settings().worker_poll_seconds * 4)
+                ),
+                "last_seen_at": lease.last_seen_at.isoformat(),
+            }
+            for lease in leases
+        ]
 
 
 def claim_render_job(worker_id: str) -> ContentJob | None:

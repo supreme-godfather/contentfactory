@@ -30,6 +30,8 @@ class ContentJob(Base):
     script_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     render_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    schedule_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -188,3 +190,7 @@ def init_db() -> None:
             connection.execute(text("ALTER TABLE content_jobs ADD COLUMN lease_expires_at TIMESTAMP"))
         if "retry_count" not in columns:
             connection.execute(text("ALTER TABLE content_jobs ADD COLUMN retry_count INTEGER DEFAULT 0"))
+        if "scheduled_at" not in columns:
+            connection.execute(text("ALTER TABLE content_jobs ADD COLUMN scheduled_at TIMESTAMP"))
+        if "schedule_notified_at" not in columns:
+            connection.execute(text("ALTER TABLE content_jobs ADD COLUMN schedule_notified_at TIMESTAMP"))

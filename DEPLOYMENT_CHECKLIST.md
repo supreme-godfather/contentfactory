@@ -6,7 +6,8 @@ quarantined n8n project.
 ## Create the service
 
 1. Open the Railway project `patient-generosity`.
-2. Confirm the PostgreSQL service is present and private.
+2. Renew Railway billing, then confirm the existing PostgreSQL service and
+   `postgres-volume` are present and healthy. Do not delete/recreate the volume.
 3. Add an empty service named `factory-api`.
 4. On your laptop, open PowerShell in this folder:
 
@@ -55,7 +56,10 @@ GOOGLE_IMAGE_MODEL=imagen-3.0-generate-002
 ```
 
 Keep `MOCK_PUBLISHING=true` until the health checks and Telegram webhook have
-been tested. Do not enable YouTube or Instagram yet.
+been tested. Keep Instagram publishing disabled until a private/staging Reel
+passes quality review.
+Add a persistent Railway volume mounted at `/app/data` before rendering posts;
+otherwise MP4s may disappear when the API container is replaced.
 
 ## Optional custom domain
 
@@ -78,10 +82,35 @@ operation, never by placing the token in a URL shared in chat.
 ## First acceptance checks
 
 - `GET /health` returns `status: ok`.
+- `GET /ready` returns `status: ready` only when PostgreSQL accepts a query.
 - `GET /api/status` reports paused and mock mode.
 - `/start`, `/status`, `/queue`, `/pause`, and `/resume` work for the owner ID.
 - A non-owner Telegram ID is rejected.
 - `/generate` creates a queued job.
+- Telegram **Instagram setup** stores the Graph API token encrypted; send
+  `id YOUR_INSTAGRAM_USER_ID` to save the account ID through the bot.
 - Approval changes only that job version.
 - Publication remains blocked while paused.
 - No YouTube or Instagram request is made.
+
+## Railway renewal recovery
+
+- Renew billing from Railway's account billing page; this cannot be controlled
+  from Telegram.
+- Inspect the existing Postgres deployment and volume before restarting either
+  service. Preserve the volume. If Postgres stays crashed, recover through
+  Railway's backup/support path before redeploying the API.
+- Once `/ready` passes, deploy the API and check `/ready` again.
+- Replace previously exposed bot/admin/worker/webhook secrets in Railway. Do
+  not paste them into chat. Reinstall the RDP worker with the new worker token.
+- Approved MP4s are exposed to Meta at
+  `https://<public-host>/media/<job-id>.mp4`; the API needs persistent media
+  storage mounted at `/app/data`.
+
+## Other hosts
+
+`Dockerfile` packages the API for Docker-compatible hosts. The API still needs
+PostgreSQL and persistent media storage. The RDP worker remains a separate
+always-on outbound HTTPS process. Vercel functions are not suitable for this
+long-running API and disk-backed media flow without replacing the database,
+storage, and worker architecture.

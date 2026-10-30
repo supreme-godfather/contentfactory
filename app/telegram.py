@@ -3,6 +3,7 @@ import asyncio
 import re
 import html
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import httpx
@@ -10,7 +11,20 @@ import httpx
 from .config import get_settings
 from .security import require_owner
 from .discovery import analytics_recommendations, analytics_summary, list_trends
-from .services import approve_job, create_job, generate_content, is_paused, list_jobs, publish_job, retry_job, set_paused
+from .services import (
+    approve_job,
+    cancel_job,
+    create_job,
+    generate_content,
+    is_paused,
+    list_jobs,
+    publish_job,
+    revise_job,
+    retry_job,
+    schedule_job,
+    set_paused,
+    worker_status,
+)
 from .youtube_oauth import connection_status, create_authorization_url, sync_channel_analytics
 from .hq import (
     DAILY_LIMIT_PRESETS,
@@ -21,8 +35,10 @@ from .hq import (
     get_format_key,
     get_niche_key,
     get_niche_label,
+    is_mock_publishing,
     set_daily_publish_limit,
     set_format,
+    set_mock_publishing,
     set_niche,
 )
 from .provider_credentials import (
@@ -36,6 +52,8 @@ from .provider_credentials import (
 
 logger = logging.getLogger(__name__)
 _pending_provider_setup: dict[int, str] = {}
+_pending_platform_setup: dict[int, str] = {}
+_pending_schedule: dict[int, str] = {}
 
 # ── Emoji constants for visual consistency ──────────────────────────────
 _STATUS_EMOJI = {
@@ -82,14 +100,18 @@ def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
 
 def _controls_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     """Controls panel — the headquarters: factory switch, channel settings
-    (niche, format, daily limit), providers, and YouTube connection."""
+    (niche, format, daily limit), providers, Instagram, and publishing mode."""
     paused = is_paused()
     toggle = _button("▶️ Resume factory", "resume") if paused else _button("⏸️ Pause factory", "pause")
     return {
         "inline_keyboard": [
             [toggle],
             [_button("🎯 Niche", "hq:niche"), _button("🎞 Format", "hq:format")],
+            [_button("📸 Reel profile", "reel_profile")],
             [_button("📤 Daily upload limit", "hq:limit"), _button("🧩 Providers", "providers")],
+            [_button("🧪 Mock/live publishing mode", "publishing_mode")],
+            [_button("📸 Instagram setup", "instagram_setup")],
+            [_button("🖥 Worker & API health", "system_health")],
             [_button("🔗 Connect YouTube", "youtube_auth"), _button("🔄 Sync YouTube", "sync_analytics")],
             [_button("🔄 Refresh status", "refresh"), _button("🔙 Back to menu", "menu")],
         ]
@@ -165,6 +187,49 @@ def _build_limit_message() -> str:
     )
 
 
+def _reel_profile_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .hq import REEL_DURATION_PRESETS, REEL_VOICE_PRESETS, get_reel_duration, get_reel_voice
+
+    duration = get_reel_duration()
+    voice = get_reel_voice()
+    rows = [
+        [
+            _button(
+                f"{'✅ ' if seconds == duration else ''}{seconds}s",
+                f"reel_duration:{seconds}",
+            )
+            for seconds in REEL_DURATION_PRESETS
+        ]
+    ]
+    rows.extend(
+        [
+            [
+                _button(
+                    f"{'✅ ' if item == voice else ''}{item.rsplit('-', 1)[-1]}",
+                    f"reel_voice:{item}",
+                )
+            ]
+            for item in REEL_VOICE_PRESETS
+        ]
+    )
+    rows.append([_button("🔙 Back to Controls", "controls")])
+    return {"inline_keyboard": rows}
+
+
+def _build_reel_profile_message() -> str:
+    from .hq import get_reel_duration, get_reel_voice
+
+    return (
+        f"📸 <b>Hindi Reel profile</b>\n{_divider()}\n\n"
+        "Style: faceless, dark-cinematic psychology, mindset and history.\n"
+        "Format: 9:16 with timed Hindi captions and a slow cinematic camera move.\n"
+        f"Duration: <b>{get_reel_duration()} seconds</b>\n"
+        f"Google Hindi voice: <b>{html.escape(get_reel_voice())}</b>\n\n"
+        "Only use original or properly licensed audio and source-checked facts. "
+        "Music tracks are not bundled; add a licensed track during editing until a licensed music source is configured."
+    )
+
+
 def _automation_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     """Automation panel: live on/off state, run-once, and the toggle."""
     from .automation import automation_enabled
@@ -195,34 +260,35 @@ def _build_automation_message() -> str:
         f"🤖 <b>Automation</b>\n{_divider()}\n\n"
         f"  State: <b>{'🟢 ON' if enabled else '⚪ OFF'}</b>"
         f"  ·  Factory: <b>{'⏸️ Paused' if paused else '▶️ Running'}</b>\n"
-        f"  Platform: <b>YouTube only</b>\n"
+        f"  Platform: <b>Instagram Reels</b>\n"
         f"  Every: <b>{settings.automation_interval_seconds}s</b>"
         f"  ·  Min trend score: <b>{settings.automation_min_trend_score}</b>"
         f"  ·  Max per cycle: <b>{settings.automation_max_jobs_per_cycle}</b>\n\n"
         "Each cycle requeues failed renders, then turns the best trend "
-        "into a generated YouTube job. It never approves or publishes — "
+        "into a generated Instagram Reel job. It never approves or publishes — "
         "that stays with you.\n\n"
         f"{_divider()}"
     )
 
 
 def _job_keyboard(job_id: str) -> dict[str, list[list[dict[str, str]]]]:
-    """Rich action keyboard for a single job."""
-    short = job_id[:8]
+    """Actions for a job, keeping revision and cancellation explicit."""
     return {
         "inline_keyboard": [
             [
                 _button("✅ Approve", f"approve:{job_id}"),
-                _button("❌ Reject", f"reject:{job_id}"),
+                _button("✍️ Revise", f"revise:{job_id}"),
             ],
             [
                 _button("📤 Publish now", f"publish:{job_id}"),
                 _button("🔍 Quality check", f"quality:{job_id}"),
             ],
+            [_button("⏰ Schedule reminder", f"schedule:{job_id}")],
             [
                 _button("🔁 Retry", f"retry:{job_id}"),
-                _button("🔙 Back to menu", "menu"),
+                _button("🗑 Cancel job", f"cancel:{job_id}"),
             ],
+            [_button("🔙 Back to menu", "menu")],
         ]
     }
 
@@ -442,16 +508,17 @@ async def configure_webhook() -> None:
     settings = get_settings()
     if not settings.telegram_bot_token or not settings.public_base_url:
         return
+    if not settings.telegram_webhook_secret or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,256}", settings.telegram_webhook_secret
+    ):
+        logger.error("Telegram webhook not registered: a valid webhook secret is required")
+        return
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/setWebhook"
     payload: dict[str, str] = {
         "url": f"{settings.public_base_url.rstrip('/')}/telegram/webhook",
         "drop_pending_updates": "false",
     }
-    if settings.telegram_webhook_secret:
-        if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", settings.telegram_webhook_secret):
-            payload["secret_token"] = settings.telegram_webhook_secret
-        else:
-            logger.error("Telegram webhook secret has illegal characters; registering without a secret")
+    payload["secret_token"] = settings.telegram_webhook_secret
     async with httpx.AsyncClient(timeout=15) as client:
         for attempt in range(1, 6):
             try:
@@ -502,7 +569,7 @@ def _build_start_message() -> str:
         f"{_divider()}\n"
         f"  Factory: <b>{factory_state}</b>\n"
         f"  YouTube: {youtube_state}\n"
-        f"  Mode: {'Safe preview (mock)' if settings.mock_publishing else 'Live'}\n"
+        f"  Mode: {'Safe preview (mock)' if is_mock_publishing() else 'Live'}\n"
         f"  Publishing: 🔒 Approval required, always\n"
         f"\n"
         f"Pick an action below, or type /help for commands.\n"
@@ -515,8 +582,8 @@ def _build_status_message() -> str:
     paused = is_paused()
     state_icon = "🔴" if paused else "🟢"
     state_text = "PAUSED" if paused else "RUNNING"
-    mock_icon = "🧪" if settings.mock_publishing else "🚀"
-    mock_text = "Mock mode" if settings.mock_publishing else "Live mode"
+    mock_icon = "🧪" if is_mock_publishing() else "🚀"
+    mock_text = "Mock mode" if is_mock_publishing() else "Live mode"
     yt_icon = "✅" if settings.youtube_enabled else "❌"
 
     jobs = list_jobs()
@@ -534,8 +601,8 @@ def _build_status_message() -> str:
         f"  ⏳  Pipeline load: <code>{load_bar}</code> ({len(active_jobs)}/{max_concurrent} active)\n"
         f"\n"
         f"  <b>Platform</b>\n"
-        f"  {yt_icon}  YouTube — active platform\n"
-        f"  ⚪  Instagram — coming later\n"
+        f"  📸  Instagram Reels — active profile\n"
+        f"  {yt_icon}  YouTube — available but not the current content profile\n"
         f"\n"
         f"  <b>Limits</b>\n"
         f"  📤  Daily quota: {get_daily_publish_limit()} (set in Controls)\n"
@@ -647,8 +714,8 @@ def _build_help_message() -> str:
         f"📚 <b>Command Reference</b>\n"
         f"{_divider()}\n"
         f"\n"
-        f"<b>🎬 Content (YouTube)</b>\n"
-        f"  /generate &lt;topic&gt; — Create a Hindi YouTube preview\n"
+        f"<b>📸 Content (Instagram Reels)</b>\n"
+        f"  /generate &lt;topic&gt; — Create a Hindi Reel preview\n"
         f"  /approve &lt;job-id&gt; — Lock content for publishing\n"
         f"  /publish &lt;job-id&gt; — Publish approved content\n"
         f"  /automation — Run one automation cycle now (or open the 🤖 Automation panel to turn it on/off)\n"
@@ -666,13 +733,13 @@ def _build_help_message() -> str:
         f"  /pause — Pause all automation\n"
         f"  /resume — Resume automation\n"
         f"  /menu — Show main menu\n"
-        f"  ⚙️ Controls panel — niche, format (Shorts/Long), daily upload limit, providers: everything is set there\n"
+        f"  ⚙️ Controls — Reel profile, publishing mode, limits and providers\n"
         f"\n"
         f"<b>💡 Tips</b>\n"
         f"  • All content requires approval before publishing\n"
         f"  • Use short job IDs (first 8 chars) with commands\n"
         f"  • The factory starts paused for safety\n"
-        f"  • YouTube uploads remain private until explicitly enabled\n"
+        f"  • Live Instagram publishing must be explicitly enabled and every Reel approved\n"
         f"\n"
         f"{_divider()}"
     )
@@ -691,7 +758,7 @@ def _build_controls_message() -> str:
         f"  📤 Daily upload limit: <b>{get_daily_publish_limit()}/day</b>\n"
         f"\n"
         f"<b>Quick commands</b>\n"
-        f"  /generate &lt;topic&gt; — create a YouTube preview\n"
+        f"  /generate &lt;topic&gt; — create an Instagram Reel preview\n"
         f"  /approve &lt;job-id&gt; — approve after review\n"
         f"  /publish &lt;job-id&gt; — publish an approved job\n"
         f"\n"
@@ -713,7 +780,7 @@ def _build_create_message() -> str:
         f"\n"
         f"Example: <code>/generate चंद्रयान मिशन की कहानी</code>\n"
         f"\n"
-        f"A YouTube preview is created in the current format "
+        f"An Instagram Reel preview is created in the current format "
         f"({html.escape(str(get_format()['label']))}, niche: "
         f"{html.escape(get_niche_label())}) and sent to the render worker. "
         f"Nothing is published without your approval. Change format or "
@@ -784,7 +851,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                 else:
                     summary = (
                         f"🤖 <b>Automation cycle complete</b>\n"
-                        f"   Platform: YouTube\n"
+                        f"   Platform: Instagram Reels\n"
                         f"   🔥 Trends considered: {outcome.get('trends_considered', 0)}\n"
                         f"   ✨ Jobs created: {outcome.get('jobs_created', 0)}\n"
                         f"   📝 Jobs generated: {outcome.get('jobs_generated', 0)}\n"
@@ -871,6 +938,39 @@ async def handle_update(update: dict[str, Any]) -> None:
             elif data == "hq:format":
                 await send_message(chat_id, _build_format_message(), _format_keyboard())
 
+            elif data == "reel_profile":
+                await send_message(
+                    chat_id,
+                    _build_reel_profile_message(),
+                    _reel_profile_keyboard(),
+                )
+
+            elif data.startswith("reel_duration:"):
+                from .hq import set_reel_duration
+
+                try:
+                    seconds = set_reel_duration(int(data.split(":", 1)[1]))
+                    await send_message(
+                        chat_id,
+                        f"✅ <b>Reel duration set to {seconds} seconds.</b>\nNew jobs use this target.",
+                        _reel_profile_keyboard(),
+                    )
+                except ValueError as exc:
+                    await send_message(chat_id, f"⚠️ {html.escape(str(exc))}", _reel_profile_keyboard())
+
+            elif data.startswith("reel_voice:"):
+                from .hq import set_reel_voice
+
+                try:
+                    voice = set_reel_voice(data.split(":", 1)[1])
+                    await send_message(
+                        chat_id,
+                        f"✅ <b>Hindi narration voice set:</b> {html.escape(voice)}",
+                        _reel_profile_keyboard(),
+                    )
+                except ValueError as exc:
+                    await send_message(chat_id, f"⚠️ {html.escape(str(exc))}", _reel_profile_keyboard())
+
             elif data.startswith("format:"):
                 try:
                     info = set_format(data.split(":", 1)[1])
@@ -898,6 +998,119 @@ async def handle_update(update: dict[str, Any]) -> None:
 
             elif data == "providers":
                 await send_message(chat_id, _provider_message(), _provider_keyboard())
+
+            elif data == "instagram_setup":
+                from .platform_credentials import get_platform_secret, get_platform_value, platform_enabled
+
+                configured = bool(get_platform_secret("instagram") or get_settings().instagram_access_token)
+                user_configured = bool(get_platform_value("instagram", "user_id") or get_settings().instagram_user_id)
+                active = platform_enabled("instagram", get_settings().instagram_enabled)
+                await send_message(
+                    chat_id,
+                    (
+                        "📸 <b>Instagram Reels setup</b>\n"
+                        f"{_divider()}\n\n"
+                        f"Account ID: <b>{'✅ configured' if user_configured else '⚪ missing'}</b>\n"
+                        f"Access token: <b>{'✅ configured' if configured else '⚪ missing'}</b>\n\n"
+                        f"Publishing: <b>{'🟢 enabled' if active else '⚪ disabled'}</b>\n\n"
+                        "Send <code>id YOUR_INSTAGRAM_USER_ID</code> or tap the token button below. "
+                        "The token is encrypted and the message is deleted after receipt."
+                    ),
+                    {"inline_keyboard": [
+                        [_button("🔐 Set Instagram token", "instagram_token")],
+                        [_button("🟢 Enable Instagram publishing", "instagram:enable")],
+                        [_button("⏸ Disable Instagram publishing", "instagram:disable")],
+                        [_button("🔙 Back to Controls", "controls")],
+                    ]},
+                )
+
+            elif data == "publishing_mode":
+                live = not is_mock_publishing()
+                await send_message(
+                    chat_id,
+                    (
+                        f"🧪 <b>Publishing mode</b>\n{_divider()}\n\n"
+                        f"Current: <b>{'LIVE' if live else 'MOCK / SAFE'}</b>\n"
+                        "Mock mode never calls Instagram or YouTube. Live mode calls an official API "
+                        "only when the platform is enabled and a job has current-version approval.\n\n"
+                        "Switching to live requires a second confirmation."
+                    ),
+                    {"inline_keyboard": [
+                        [_button("⚠️ Confirm live mode", "publishing_mode:live")],
+                        [_button("🧪 Keep safe mock mode", "publishing_mode:mock")],
+                        [_button("🔙 Back to Controls", "controls")],
+                    ]},
+                )
+
+            elif data in {"publishing_mode:live", "publishing_mode:mock"}:
+                enable_live = data == "publishing_mode:live"
+                set_mock_publishing(not enable_live)
+                await send_message(
+                    chat_id,
+                    (
+                        "⚠️ <b>Live mode enabled.</b> Platform enablement, credentials, quality checks, "
+                        "and explicit approval are still required."
+                        if enable_live
+                        else "🧪 <b>Safe mock mode enabled.</b> No platform API calls will be made."
+                    ),
+                    _controls_keyboard(),
+                )
+
+            elif data in {"instagram:enable", "instagram:disable"}:
+                from .platform_credentials import set_platform_enabled
+
+                enabled = data == "instagram:enable"
+                set_platform_enabled("instagram", enabled)
+                await send_message(
+                    chat_id,
+                    (
+                        f"{'🟢 Instagram publishing enabled' if enabled else '⏸ Instagram publishing disabled'}.\n"
+                        "A Reel still cannot publish without explicit approval for its current version."
+                    ),
+                    _back_keyboard(),
+                )
+
+            elif data == "instagram_token":
+                _pending_platform_setup[chat_id] = "instagram"
+                await send_message(
+                    chat_id,
+                    "🔐 <b>Send the Instagram Graph API token</b>\nIt will be encrypted and deleted immediately. Press /cancel to abort.",
+                    _back_keyboard(),
+                )
+
+            elif data == "system_health":
+                from .automation import automation_enabled
+                from .platform_credentials import get_platform_secret
+
+                workers = worker_status()
+                online = [worker["worker_id"] for worker in workers if worker["online"]]
+                ready_state = "not configured"
+                if get_settings().public_base_url:
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            response = await client.get(f"{get_settings().public_base_url.rstrip('/')}/ready")
+                        ready_state = "ready" if response.is_success else f"HTTP {response.status_code}"
+                    except httpx.HTTPError:
+                        ready_state = "unreachable"
+                worker_state = ", ".join(html.escape(str(worker_id)) for worker_id in online) or "offline"
+                configured = bool(
+                        get_platform_secret("instagram")
+                        or get_settings().instagram_access_token
+                )
+                await send_message(
+                        chat_id,
+                        (
+                            f"🖥 <b>System health</b>\n{_divider()}\n\n"
+                            f"API + database: <b>{html.escape(ready_state)}</b>\n"
+                            f"RDP worker: <b>{worker_state}</b>\n"
+                            f"Instagram token: <b>{'configured' if configured else 'missing'}</b>\n"
+                            f"Factory: <b>{'paused' if is_paused() else 'running'}</b>\n"
+                            f"Automation: <b>{'on' if automation_enabled() else 'off'}</b>\n\n"
+                        "If worker is offline, check the RDP is signed in, FFmpeg is on PATH, "
+                        "the worker token was rotated, and the worker URL matches the API."
+                    ),
+                    _back_keyboard(),
+                )
 
             elif data.startswith("provider:"):
                 provider = data.split(":", 1)[1]
@@ -960,14 +1173,48 @@ async def handle_update(update: dict[str, Any]) -> None:
 
             elif data.startswith("reject:"):
                 job_id = data.split(":", 1)[1]
+                job = generate_content(revise_job(job_id).id)
                 await send_message(
                     chat_id,
                     (
-                        f"❌ <b>Job flagged for revision</b>\n{_divider()}\n\n"
-                        f"Job <code>{html.escape(job_id[:8])}</code> was not approved.\n"
-                        f"Re-generate or update content before approving.\n\n"
+                        f"✍️ <b>Revision queued</b>\n{_divider()}\n\n"
+                        f"{_format_job_card(job)}\n\n"
+                        "A new content version is rendering. Previous approval is invalidated.\n\n"
                         f"{_divider()}"
                     ),
+                    _job_keyboard(job.id),
+                )
+
+            elif data.startswith("revise:"):
+                job_id = data.split(":", 1)[1]
+                job = generate_content(revise_job(job_id).id)
+                await send_message(
+                    chat_id,
+                    (
+                        f"✍️ <b>New Reel version queued</b>\n{_divider()}\n\n"
+                        f"{_format_job_card(job)}\n\n"
+                        "The previous approval is invalidated. Review the new render before approving."
+                    ),
+                    _job_keyboard(job.id),
+                )
+
+            elif data.startswith("cancel:"):
+                job_id = data.split(":", 1)[1]
+                job = cancel_job(job_id)
+                await send_message(
+                    chat_id,
+                    f"🗑 <b>Job cancelled</b>\n{_divider()}\n\n{_format_job_card(job)}",
+                    _back_keyboard(),
+                )
+
+            elif data.startswith("schedule:"):
+                job_id = data.split(":", 1)[1]
+                _pending_schedule[chat_id] = job_id
+                await send_message(
+                    chat_id,
+                    "⏰ <b>Schedule a publish reminder</b>\n"
+                    "Send the future time in India time as <code>YYYY-MM-DD HH:MM</code>.\n"
+                    "At that time the bot will ask you to publish; it will never auto-post.",
                     _back_keyboard(),
                 )
 
@@ -988,7 +1235,7 @@ async def handle_update(update: dict[str, Any]) -> None:
             elif data.startswith("publish:"):
                 job_id = data.split(":", 1)[1]
                 job = publish_job(job_id)
-                mock_label = " (mock)" if get_settings().mock_publishing else ""
+                mock_label = " (mock)" if is_mock_publishing() else ""
                 await send_message(
                     chat_id,
                     (
@@ -1035,6 +1282,65 @@ async def handle_update(update: dict[str, Any]) -> None:
 
         # ── Text command handling ───────────────────────────────────
         text = (message.get("text") or "").strip()
+
+        if chat_id in _pending_schedule:
+            if text == "/cancel":
+                _pending_schedule.pop(chat_id, None)
+                await send_message(chat_id, "↩️ Schedule reminder cancelled.", _back_keyboard())
+                return
+            job_id = _pending_schedule.pop(chat_id)
+            try:
+                local_time = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(
+                    tzinfo=ZoneInfo("Asia/Kolkata")
+                )
+                job = schedule_job(job_id, local_time)
+                scheduled_at = job.scheduled_at
+                if scheduled_at is not None and scheduled_at.tzinfo is None:
+                    scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+                await send_message(
+                    chat_id,
+                    (
+                        f"⏰ <b>Publish reminder scheduled</b>\n"
+                        f"Reel: {html.escape(job.topic)}\n"
+                        f"Time: {scheduled_at.astimezone(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M IST')}\n"
+                        "A Telegram reminder will arrive then. Publishing still needs your tap."
+                    ),
+                    _job_keyboard(job.id),
+                )
+            except (ValueError, TypeError) as exc:
+                await send_message(chat_id, f"⚠️ {html.escape(str(exc))}", _keyboard())
+            return
+
+        if chat_id in _pending_platform_setup:
+            if text == "/cancel":
+                _pending_platform_setup.pop(chat_id, None)
+                await send_message(chat_id, "↩️ Instagram setup cancelled.", _back_keyboard())
+                return
+            platform = _pending_platform_setup.pop(chat_id)
+            try:
+                from .platform_credentials import set_platform_secret
+
+                set_platform_secret(platform, text)
+                message_id = message.get("message_id")
+                if isinstance(message_id, int):
+                    try:
+                        await delete_message(chat_id, message_id)
+                    except Exception:
+                        logger.warning("Could not delete platform credential message", exc_info=True)
+                await send_message(chat_id, "✅ <b>Instagram token saved encrypted.</b>", _back_keyboard())
+            except ValueError as exc:
+                await send_message(chat_id, f"⚠️ {html.escape(str(exc))}", _back_keyboard())
+            return
+
+        if text.lower().startswith("id "):
+            from .platform_credentials import set_platform_value
+
+            try:
+                set_platform_value("instagram", "user_id", text[3:].strip())
+                await send_message(chat_id, "✅ <b>Instagram account ID saved.</b>", _back_keyboard())
+            except ValueError as exc:
+                await send_message(chat_id, f"⚠️ {html.escape(str(exc))}", _back_keyboard())
+            return
 
         if chat_id in _pending_provider_setup:
             if text == "/cancel":
@@ -1122,8 +1428,7 @@ async def handle_update(update: dict[str, Any]) -> None:
             if not topic:
                 await send_message(chat_id, "⚠️ Please provide a topic: /generate &lt;topic&gt;", _keyboard())
                 return
-            # YouTube-only for now; Instagram creation comes later.
-            job = generate_content(create_job(topic, "youtube").id)
+            job = generate_content(create_job(topic, "instagram").id)
             await send_message(
                 chat_id,
                 (
@@ -1133,7 +1438,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                     f"   ├ 📝 Script generated:  [██████████] 100%\n"
                     f"   ├ 🎞️ RDP video render:  [████░░░░░░]  40% (Dispatched)\n"
                     f"   └ 🛡️ Quality gate:      [░░░░░░░░░░]   0% (Pending)\n\n"
-                    f"🎞️ The RDP worker is rendering the MP4 before approval.\n"
+                    f"🎞️ The RDP worker is rendering the Reel MP4 before approval.\n"
                     f"{_divider()}"
                 ),
                 _job_keyboard(job.id),
@@ -1167,7 +1472,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                 await send_message(chat_id, "⚠️ Usage: /publish &lt;job-id&gt;", _keyboard())
                 return
             job = publish_job(job_id)
-            mock_label = " (mock)" if get_settings().mock_publishing else ""
+            mock_label = " (mock)" if is_mock_publishing() else ""
             await send_message(
                 chat_id,
                 (
@@ -1189,7 +1494,7 @@ async def handle_update(update: dict[str, Any]) -> None:
             else:
                 summary = (
                     f"🤖 <b>Automation cycle complete</b>\n"
-                    f"   Platform: YouTube\n"
+                    f"   Platform: Instagram Reels\n"
                     f"   🔥 Trends considered: {outcome.get('trends_considered', 0)}\n"
                     f"   ✨ Jobs created: {outcome.get('jobs_created', 0)}\n"
                     f"   📝 Jobs generated: {outcome.get('jobs_generated', 0)}\n"

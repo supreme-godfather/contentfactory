@@ -29,6 +29,51 @@ def _scene_text(job: dict[str, str]) -> list[str]:
     return paragraphs[:5]
 
 
+def _caption_timing(job: dict, duration: float) -> list[tuple[str, float, float]]:
+    cues = job.get("caption_cues")
+    valid = [
+        cue
+        for cue in cues
+        if isinstance(cue, dict) and isinstance(cue.get("text"), str)
+    ] if isinstance(cues, list) else []
+    if not valid:
+        texts = _scene_text(job)
+        span = duration / len(texts)
+        return [(text, index * span, (index + 1) * span) for index, text in enumerate(texts)]
+
+    original_end = max(float(cue.get("end_seconds", 0)) for cue in valid)
+    scale = duration / original_end if original_end > 0 else 1.0
+    return [
+        (
+            " ".join(cue["text"].split()),
+            max(0.0, float(cue.get("start_seconds", 0)) * scale),
+            min(duration, float(cue.get("end_seconds", duration)) * scale),
+        )
+        for cue in valid
+    ]
+
+
+def _audio_duration(ffprobe: str | None, audio_path: Path | None) -> float | None:
+    if not ffprobe or not audio_path or not audio_path.is_file():
+        return None
+    result = subprocess.run(
+        [
+            ffprobe, "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        measured = float(result.stdout.strip())
+    except ValueError:
+        return None
+    return measured if measured > 0 else None
+
+
 def _filter_path(value: Path) -> str:
     return str(value.resolve()).replace("\\", "/").replace(":", r"\:")
 
@@ -39,7 +84,13 @@ def render_video(job: dict[str, str], output_dir: Path, image_path: Path | None 
         raise RuntimeError("FFmpeg is required on the RDP worker. Install FFmpeg and restart the worker.")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{job['id']}.mp4"
+    ffprobe = shutil.which("ffprobe")
     duration = max(15, min(90, int(job.get("duration_seconds") or 60)))
+    measured_audio = _audio_duration(ffprobe, audio_path)
+    if measured_audio is not None:
+        duration = max(15, min(90, round(measured_audio)))
+    if job.get("format") == "instagram_reel":
+        duration = max(45, min(60, duration))
     topic = _escape_drawtext(job["topic"][:180])
     font = job.get("font_path")
     if not font:
@@ -53,18 +104,20 @@ def render_video(job: dict[str, str], output_dir: Path, image_path: Path | None 
                 font = candidate
                 break
     font_option = f":fontfile='{_escape_font_path(font)}'" if font and Path(font).exists() else ""
-    scene_texts = _scene_text(job)
-    scene_seconds = duration / len(scene_texts)
     text_dir = output_dir / f"{job['id']}-captions"
     text_dir.mkdir(parents=True, exist_ok=True)
     filters = [
+        "scale=1080:1920:force_original_aspect_ratio=increase",
+        "crop=1080:1920",
+        "zoompan=z='min(zoom+0.0004,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30",
+        "eq=contrast=1.12:saturation=0.76:brightness=-0.04",
+        "vignette=PI/5",
         f"drawtext=text='{topic}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=180{font_option}"
     ]
-    for index, caption in enumerate(scene_texts):
+    cues = _caption_timing(job, duration)
+    for index, (caption, start, end) in enumerate(cues):
         caption_path = text_dir / f"scene-{index}.txt"
         caption_path.write_text(caption, encoding="utf-8")
-        start = index * scene_seconds
-        end = (index + 1) * scene_seconds
         filters.append(
             "drawbox=x=60:y=h-430:w=w-120:h=250:color=black@0.55:t=fill:"
             f"enable='between(t,{start:.3f},{end:.3f})'"
@@ -88,10 +141,10 @@ def render_video(job: dict[str, str], output_dir: Path, image_path: Path | None 
         command.extend(["-map", "0:v:0", "-map", "1:a:0"])
     command.extend(["-vf", video_filter, "-c:v", "libx264", "-pix_fmt", "yuv420p"])
     if audio_path and audio_path.exists():
-        command.extend(["-c:a", "aac", "-t", str(duration)])
+        command.extend(["-c:a", "aac"])
     else:
         command.append("-an")
-    command.extend(["-movflags", "+faststart", str(output_path)])
+    command.extend(["-t", str(duration), "-movflags", "+faststart", str(output_path)])
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
     if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size < 1024:
         detail = completed.stderr[-1000:].strip()

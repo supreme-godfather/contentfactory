@@ -25,11 +25,19 @@ NICHE_PRESETS: dict[str, str] = {
     "hindi_history": "Hindi history & untold stories explainer",
     "hindi_money": "Hindi money & business explainer",
     "hindi_motivation": "Hindi motivation & life lessons",
+    "hindi_dark_psychology": "Hindi dark psychology, mindset & history",
 }
-DEFAULT_NICHE_KEY = "hindi_facts"
+DEFAULT_NICHE_KEY = "hindi_dark_psychology"
 
 # ── Formats ────────────────────────────────────────────────────────────
 FORMATS: dict[str, dict[str, object]] = {
+    "reel": {
+        "label": "Instagram Reel (vertical, 45–60s)",
+        "format_code": "instagram_reel",
+        "aspect_ratio": "9:16",
+        "target_duration_seconds": 55,
+        "script_words": "105-140",
+    },
     "short": {
         "label": "Shorts (vertical, ~60s)",
         "format_code": "vertical_short",
@@ -45,11 +53,18 @@ FORMATS: dict[str, dict[str, object]] = {
         "script_words": "550-700",
     },
 }
-DEFAULT_FORMAT_KEY = "short"
+DEFAULT_FORMAT_KEY = "reel"
 
 DAILY_LIMIT_MIN = 1
 DAILY_LIMIT_MAX = 20
 DAILY_LIMIT_PRESETS = (1, 2, 3, 4, 6, 10)
+REEL_DURATION_PRESETS = (45, 55, 60)
+REEL_VOICE_PRESETS = (
+    "hi-IN-Neural2-A",
+    "hi-IN-Neural2-B",
+    "hi-IN-Wavenet-A",
+    "hi-IN-Wavenet-B",
+)
 
 
 def _get(key: str) -> str | None:
@@ -90,7 +105,11 @@ def get_format_key() -> str:
 
 
 def get_format() -> dict[str, object]:
-    return FORMATS[get_format_key()]
+    key = get_format_key()
+    info = dict(FORMATS[key])
+    if key == "reel":
+        info["target_duration_seconds"] = get_reel_duration()
+    return info
 
 
 def set_format(key: str) -> dict[str, object]:
@@ -115,3 +134,44 @@ def set_daily_publish_limit(limit: int) -> int:
     clamped = max(DAILY_LIMIT_MIN, min(DAILY_LIMIT_MAX, int(limit)))
     _set("max_daily_publications", str(clamped))
     return clamped
+
+
+def is_mock_publishing() -> bool:
+    value = _get("mock_publishing")
+    if value is not None:
+        return value == "true"
+    return get_settings().mock_publishing
+
+
+def set_mock_publishing(enabled: bool) -> None:
+    _set("mock_publishing", str(enabled).lower())
+
+
+def get_reel_duration() -> int:
+    raw = _get("reel_duration_seconds")
+    try:
+        value = int(raw) if raw is not None else get_settings().reel_default_duration_seconds
+    except ValueError:
+        value = get_settings().reel_default_duration_seconds
+    return min(REEL_DURATION_PRESETS, key=lambda preset: abs(preset - value))
+
+
+def set_reel_duration(seconds: int) -> int:
+    if seconds not in REEL_DURATION_PRESETS:
+        raise ValueError("Unsupported Reel duration")
+    _set("reel_duration_seconds", str(seconds))
+    return seconds
+
+
+def get_reel_voice() -> str:
+    voice = _get("reel_voice")
+    if voice in REEL_VOICE_PRESETS:
+        return voice
+    return get_settings().google_tts_voice
+
+
+def set_reel_voice(voice: str) -> str:
+    if voice not in REEL_VOICE_PRESETS:
+        raise ValueError("Unsupported Hindi voice")
+    _set("reel_voice", voice)
+    return voice

@@ -40,3 +40,17 @@ are reported back to the API and are not marked ready for publication.
 If the RDP is switched off during a render, its lease expires after the
 configured `WORKER_LEASE_SECONDS` (default 15 minutes). Railway then makes the
 job available for the next worker run instead of leaving it permanently stuck.
+
+## Reel rendering and checks
+
+The current Reel profile outputs vertical 1080×1920 H.264/AAC, applies a slow
+Ken Burns camera move and dark-cinematic color grade, and times burned-in Hindi
+captions from the narration script. FFmpeg and ffprobe should both be installed
+and available on PATH. The current pipeline uses one provider-generated still
+image plus motion effects; it is not generative text-to-video. Music is not
+bundled; only use audio you own or are licensed to use.
+
+The Telegram **Worker & API health** control reports whether the last heartbeat
+is recent and whether the API's `/ready` check can reach PostgreSQL. Renewing
+Railway billing, changing service variables, and mounting a Railway volume
+remain host-account actions and cannot be performed by the bot.

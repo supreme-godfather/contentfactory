@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from .automation import automation_enabled, automation_loop, run_automation_cycle, set_automation_enabled
 from .config import get_settings
 from .db import ContentJob, SessionLocal, init_db
+from sqlalchemy import select
 from .discovery import add_analytics_snapshot, add_trend, analytics_recommendations, analytics_summary, list_trends, monetisation_readiness
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
@@ -61,15 +62,52 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "hindi-content-factory"}
 
 
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    """Readiness check that verifies the database, unlike liveness."""
+    from sqlalchemy import text
+
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="database_not_ready") from exc
+    return {"status": "ready", "service": "hindi-content-factory"}
+
+
+@app.get("/media/{filename}")
+def public_media(filename: str) -> FileResponse:
+    """Serve completed MP4s for official platform fetches.
+
+    Only completed job filenames are accepted; source assets and arbitrary
+    paths are never exposed.
+    """
+    if Path(filename).name != filename or not filename.endswith(".mp4"):
+        raise HTTPException(status_code=404, detail="Media not found")
+    with SessionLocal() as session:
+        job = session.scalar(select(ContentJob).where(ContentJob.render_path.endswith(filename)))
+        if job is None or job.status not in {"approved", "published"}:
+            raise HTTPException(status_code=404, detail="Media not found")
+    path = (Path(get_settings().media_root).resolve() / filename).resolve()
+    media_root = Path(get_settings().media_root).resolve()
+    if path.parent != media_root or not path.is_file():
+        raise HTTPException(status_code=404, detail="Media not found")
+    return FileResponse(path, media_type="video/mp4")
+
 @app.get("/api/status")
 def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
     settings = get_settings()
+    from .hq import is_mock_publishing
+    from .platform_credentials import platform_enabled
+
     return {
         "paused": is_paused(),
-        "mock_publishing": settings.mock_publishing,
+        "mock_publishing": is_mock_publishing(),
         "youtube_enabled": settings.youtube_enabled,
-        "instagram_enabled": settings.instagram_enabled,
+        "instagram_enabled": platform_enabled("instagram", settings.instagram_enabled),
         "daily_publication_limit": settings.max_daily_publications,
+        "automation_enabled": automation_enabled(),
+        "platform": "instagram",
         "youtube_oauth": connection_status(),
     }
 
@@ -189,8 +227,7 @@ def automation_status(_: None = Depends(require_admin_api_token)) -> dict[str, o
         "enabled": automation_enabled(),
         "interval_seconds": settings.automation_interval_seconds,
         "min_trend_score": settings.automation_min_trend_score,
-        # YouTube-only for now; see app/automation.py.
-        "platform": "youtube",
+        "platform": "instagram",
         "paused": is_paused(),
     }
 
@@ -254,7 +291,9 @@ def publish(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str
         job = publish_job(job_id)
     except (ValueError, HTTPException) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"id": job.id, "status": job.status, "mock": get_settings().mock_publishing}
+    from .hq import is_mock_publishing
+
+    return {"id": job.id, "status": job.status, "mock": is_mock_publishing()}
 
 
 @app.post("/telegram/webhook")
@@ -293,6 +332,7 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "script": job.script_text or "",
             "title": metadata.get("title", job.topic),
             "story_arc": metadata.get("story_arc", ["problem", "stakes", "solution", "how", "payoff"]),
+            "caption_cues": metadata.get("caption_cues", []),
             "assets": metadata.get("assets", {}),
         }
     }

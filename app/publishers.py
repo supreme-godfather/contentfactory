@@ -2,10 +2,12 @@ from dataclasses import dataclass
 import json
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
 from .config import get_settings
+from .platform_credentials import get_platform_secret, get_platform_value
 from .youtube_oauth import get_valid_access_token
 
 # Instagram container polling — module constants so tests can speed them up.
@@ -141,32 +143,45 @@ class InstagramPublisher(Publisher):
 
     def publish(self, *, title: str, description: str, media_path: str) -> PublicationResult:
         settings = get_settings()
-        if not settings.instagram_enabled:
-            return PublicationResult(status="blocked", detail="Instagram publishing is disabled.")
-        if not settings.instagram_user_id or not settings.instagram_access_token:
+        access_token = get_platform_secret("instagram") or settings.instagram_access_token
+        user_id = get_platform_value("instagram", "user_id") or settings.instagram_user_id
+        if not user_id or not user_id.isdecimal() or not access_token:
             return PublicationResult(
                 status="blocked",
-                detail="Instagram is not configured: INSTAGRAM_USER_ID and INSTAGRAM_ACCESS_TOKEN must be set.",
+                detail="Instagram account ID or access token is missing or invalid.",
             )
-        if not media_path or not media_path.startswith(("http://", "https://")):
+        if media_path and not media_path.startswith(("http://", "https://")):
+            filename = Path(media_path).name
+            if settings.public_base_url and filename.endswith(".mp4"):
+                media_path = f"{settings.public_base_url.rstrip('/')}/media/{filename}"
+        public_base = settings.public_base_url.rstrip("/")
+        public_url = urlparse(media_path) if media_path else None
+        expected_host = urlparse(public_base).netloc if public_base else ""
+        if (
+            not media_path
+            or public_url is None
+            or public_url.scheme != "https"
+            or not expected_host
+            or public_url.netloc != expected_host
+            or not public_url.path.startswith("/media/")
+        ):
             return PublicationResult(
                 status="blocked",
                 detail=(
-                    "Instagram requires a publicly accessible video URL: the Graph API fetches "
-                    "video_url itself, so a local render file cannot be uploaded directly. Host "
-                    "the rendered MP4 at a public URL first, then publish."
+                    "Instagram requires the completed MP4 at this factory's HTTPS /media route. "
+                    "Configure PUBLIC_BASE_URL and persistent media storage before publishing."
                 ),
             )
         version = settings.instagram_graph_version or "v21.0"
         base = f"https://graph.facebook.com/{version}"
-        token = settings.instagram_access_token
-        caption = f"{title}\n\n{description}"
+        token = access_token
+        caption = f"{title}\n\n{description}"[:2200]
         try:
             with httpx.Client(timeout=60) as client:
                 create = client.post(
-                    f"{base}/{settings.instagram_user_id}/media",
+                    f"{base}/{user_id}/media",
+                    headers={"Authorization": f"Bearer {token}"},
                     params={
-                        "access_token": token,
                         "media_type": "REELS",
                         "video_url": media_path,
                         "caption": caption,
@@ -181,19 +196,27 @@ class InstagramPublisher(Publisher):
                 for _ in range(max(1, INSTAGRAM_MAX_POLLS)):
                     status_resp = client.get(
                         f"{base}/{container_id}",
-                        params={"access_token": token, "fields": "status_code"},
+                        headers={"Authorization": f"Bearer {token}"},
+                        params={"fields": "status_code"},
                     )
                     status_resp.raise_for_status()
-                    if status_resp.json().get("status_code") == "FINISHED":
+                    container_status = status_resp.json().get("status_code")
+                    if container_status == "FINISHED":
                         finished = True
                         break
+                    if container_status == "ERROR":
+                        return PublicationResult(
+                            status="blocked",
+                            detail="Instagram could not process this Reel. Check codec, dimensions, and duration.",
+                        )
                     if INSTAGRAM_POLL_INTERVAL_SECONDS > 0:
                         time.sleep(INSTAGRAM_POLL_INTERVAL_SECONDS)
                 if not finished:
                     return PublicationResult(status="blocked", detail="Instagram media container did not finish processing in time.")
                 publish_resp = client.post(
-                    f"{base}/{settings.instagram_user_id}/media_publish",
-                    params={"access_token": token, "creation_id": container_id},
+                    f"{base}/{user_id}/media_publish",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"creation_id": container_id},
                 )
                 publish_resp.raise_for_status()
                 remote_id = publish_resp.json().get("id")
@@ -210,11 +233,16 @@ class InstagramPublisher(Publisher):
 
 
 def get_publisher(platform: str) -> Publisher:
-    settings = get_settings()
-    if settings.mock_publishing:
+    from .hq import is_mock_publishing
+
+    if is_mock_publishing():
         return MockPublisher(platform)
-    if platform == "instagram" and settings.instagram_enabled:
-        return InstagramPublisher()
+    settings = get_settings()
+    if platform == "instagram":
+        from .platform_credentials import platform_enabled
+
+        if platform_enabled("instagram", settings.instagram_enabled):
+            return InstagramPublisher()
     if platform == "youtube" and settings.youtube_enabled:
         return YouTubePublisher()
     return DisabledPublisher(platform)

@@ -3,18 +3,19 @@
 This is a clean rebuild. It does not import or execute the quarantined n8n
 workflow collection in `..\content engine\QUARANTINE_UNTRUSTED_2026-10-17`.
 
-The first stage is deliberately paused and uses mock publishers. It provides
-the durable job model and Telegram control surface before real YouTube or
-Instagram credentials are added.
+The current profile is Hindi, faceless, dark-cinematic Instagram Reels. The
+factory starts paused and uses mock publishers; every Reel remains approval-
+gated before publication.
 
 ## Safe start
 
 1. Copy `.env.example` to `.env`.
 2. Keep `APP_PAUSED=true`, `MOCK_PUBLISHING=true`,
-   `YOUTUBE_ENABLED=false`, and `INSTAGRAM_ENABLED=false`.
+   `INSTAGRAM_ENABLED=false`, and automation disabled.
 3. Install the pinned dependencies in an isolated virtual environment.
 4. Start with `uvicorn app.main:app --host 127.0.0.1 --port 8000`.
-5. Check `GET /health`; authenticated operators can check `GET /api/status`.
+5. Check `GET /health` and `GET /ready`; authenticated operators can check
+   `GET /api/status`.
 
 For Railway, deploy this folder with the Railway CLI:
 
@@ -29,12 +30,14 @@ prompted. Do not use `railway variables set` for secret values copied into
 chat; enter secrets directly in the Railway dashboard Variables view.
 
 Never place tokens in source code, workflow JSON, commits, logs, or chat.
-Real platform integrations stay disabled until their official OAuth setup is
-completed and the credentials are stored as encrypted Railway variables.
+Instagram uses Meta's official Graph API. Its access token is encrypted in the
+database when entered through Telegram; rotate any credentials that may have
+been exposed previously. Keep live publishing disabled until a private
+staging Reel has been verified.
 
-Container deployment is intentionally deferred until a lock file with hashes
-is generated and reviewed. This prevents an unreviewed dependency download
-during the initial security stage.
+The API can run through Railway's native Python deployment or the included
+`Dockerfile`. Railway needs PostgreSQL and persistent media storage mounted at
+`/app/data`. The Windows RDP renderer is a separate outbound-only worker.
 
 ## Current behavior
 
@@ -54,32 +57,33 @@ during the initial security stage.
 - The Telegram webhook requires `TELEGRAM_WEBHOOK_SECRET` when configured.
 - Telegram control buttons and messages are English-only by default; generated
   channel content can remain Hindi.
-- The command center is mobile-first and deliberately simple: the main
-  menu has only eight buttons (Create, Queue, Status, Trends, Analytics,
-  Controls, Automation, Pause/Resume). The Controls panel holds the
-  factory switch, provider setup, and YouTube connection/sync; the
-  Automation panel shows the live on/off state and lets the owner run a
-  cycle or toggle automation without redeploying. `/start`, `/status`,
+- The command center is mobile-first. The Controls panel holds the
+  factory switch, provider setup, and Instagram controls; the Automation
+  panel shows the live on/off state and lets the owner run a cycle or toggle
+  automation without redeploying. `/start`, `/status`,
   `/queue`, `/generate`, `/approve`, `/publish`, `/pause`, `/resume`,
   `/analytics`, `/automation`, `/retry`, and `/sync` are owner-protected
   Telegram commands.
 - `/providers` opens the encrypted provider setup panel. It supports a Google
   service-account JSON credential or an OpenAI API key; the bot deletes the
-  credential message after receipt and never echoes the secret.
+  credential message after receipt and never echoes the secret. An API key
+  is only used for the provider integrations that are actually wired.
 - AI media generation is opt-in. With `MEDIA_GENERATION_ENABLED=true`,
   Railway creates a Hindi Google Cloud Text-to-Speech MP3 and a Vertex AI
   Imagen scene image; the outbound RDP worker downloads only those job assets
-  and combines them with captions into the MP4.
+  and combines them with timed captions, a slow camera move, and a
+  dark-cinematic grade into the MP4. This uses generated still-image artwork,
+  not AI-generated video footage. Only use original or properly licensed
+  music; none is bundled.
 
 ## Automation engine
 
 The factory can now turn top trends into generated jobs automatically —
 but it is **off by default** and never publishes on its own:
 
-- **YouTube-only for now.** Automation creates YouTube jobs only; this is
-  enforced in code, so `AUTOMATION_PLATFORM` values other than `youtube`
-  are ignored (with a log warning) until Instagram automation is added
-  later. Telegram `/generate` likewise creates YouTube jobs.
+- **Instagram Reels is the active profile.** Automation creates Instagram
+  Reel jobs; Telegram `/generate` does the same. The engine remains
+  approval-gated and never publishes automatically.
 - Set `AUTOMATION_ENABLED=true` to run a background cycle every
   `AUTOMATION_INTERVAL_SECONDS` (default 300, minimum 30). Automation can
   also be turned on/off at runtime — from the Telegram 🤖 Automation
@@ -90,7 +94,7 @@ but it is **off by default** and never publishes on its own:
 - Each cycle first requeues failed jobs (up to `AUTOMATION_MAX_RETRIES`
   attempts), then takes up to `AUTOMATION_MAX_JOBS_PER_CYCLE` trend
   candidates with `total_score >= AUTOMATION_MIN_TREND_SCORE` (default 70)
-  and sufficient originality, creates a YouTube job and generates its
+  and sufficient originality, creates an Instagram Reel job and generates its
   script/assets. The trend is marked `queued`.
 - If the factory is paused (`APP_PAUSED=true` or Telegram `/pause`), the
   cycle does nothing and reports `factory_paused`.
@@ -111,11 +115,21 @@ are rejected once `MAX_STORAGE_GB` would be exceeded.
 
 Instagram uses the official Meta Graph API Reels flow and stays disabled
 unless `INSTAGRAM_ENABLED=true` **and** `INSTAGRAM_USER_ID` /
-`INSTAGRAM_ACCESS_TOKEN` are configured (token via environment only).
+`INSTAGRAM_ACCESS_TOKEN` are configured. The account ID and token can also be
+entered from Telegram's Instagram setup panel; the token is encrypted and
+never echoed.
 Important limitation: the Graph API fetches the video itself, so it
-requires a **publicly accessible video URL** — a locally rendered MP4 file
-cannot be uploaded directly. Local renders are therefore blocked with an
-explanation until the MP4 is hosted at a public URL.
+requires a **publicly accessible video URL**. Completed renders are exposed
+through the allowlisted `/media/{job_id}.mp4` route when `PUBLIC_BASE_URL` is
+configured. Only approved or published jobs are served.
+
+## Hindi cinematic Reel profile
+
+The default Telegram format is a 45–60 second Hindi Instagram Reel:
+vertical 9:16 output, faceless dark-cinematic visuals, high-contrast
+burned-in captions, measured narration timing, and psychology/mindset/history
+metadata. Automation remains off by default and every generated Reel requires
+explicit Telegram approval before publishing.
 
 ## Scriptwriting and analytics
 

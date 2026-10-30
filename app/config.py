@@ -37,13 +37,14 @@ class Settings(BaseSettings):
     instagram_user_id: str = ""
     instagram_access_token: str = ""
     instagram_graph_version: str = "v21.0"
+    reel_profile_name: str = "quiet_wolf_hindi"
+    reel_default_duration_seconds: int = 55
     automation_enabled: bool = False
     automation_interval_seconds: int = 300
     automation_min_trend_score: int = 70
-    # YouTube-only for now (user decision, 2026-10-22). Instagram automation
-    # will be enabled later; the automation engine enforces this regardless
-    # of the configured value until then.
-    automation_platform: str = "youtube"
+    # Instagram Reels is the active automation target. Publishing is gated
+    # separately by the runtime platform switch and current-version approval.
+    automation_platform: str = "instagram"
     automation_max_jobs_per_cycle: int = 1
     automation_max_retries: int = 3
     max_daily_publications: int = 6

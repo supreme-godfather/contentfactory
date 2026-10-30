@@ -19,8 +19,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 CLOSING_LINES = (
-    "ऐसी जानकारी के लिए YouTube पर Learn With Elite Explainer को subscribe "
-    "और Instagram पर sheoran_studios को follow करें।"
+    "ऐसी और कहानियों के लिए Subscribe करें और Instagram पर Follow करना न भूलें।"
 )
 
 
@@ -96,6 +95,22 @@ def _template_script_long(topic: str) -> str:
     )
 
 
+def _template_script_reel(topic: str) -> str:
+    return (
+        f"रुकिए—क्या {topic} के पीछे कोई ऐसी बात है जिसे हम अक्सर नज़रअंदाज़ कर देते हैं?\n\n"
+        f"कई बार {topic} को लोग सिर्फ़ एक सीधी-सादी बात समझते हैं। "
+        "लेकिन असली कहानी अक्सर उस छोटे संकेत में छिपी होती है, जिसे हम बिना सोचे मान लेते हैं।\n\n"
+        "मनोविज्ञान में एक अहम बात है: हमारा ध्यान सीमित है। इसलिए बार-बार दिखने वाली "
+        "कहानी हमें सच जैसी लग सकती है, भले ही हमने उसे जाँचा न हो। इतिहास में भी "
+        "संदेश पहुँचाने का माध्यम बदला—लोगों की सोच पर असर डालने की कोशिश नहीं।\n\n"
+        f"{topic} को समझने का बेहतर तरीका है: रुककर स्रोत जाँचें, दूसरी व्याख्या खोजें, "
+        "और अपने निर्णय खुद लें। किसी को नियंत्रित करना सीखना नहीं—प्रभाव को पहचानना "
+        "और अपनी agency बचाना असली सबक है।\n\n"
+        f"आपके हिसाब से {topic} में सबसे अनदेखा संकेत कौन-सा है? अपनी राय बताइए।\n\n"
+        f"{CLOSING_LINES}"
+    )
+
+
 def _resolve_format_and_niche(fmt: str | None, niche: str | None) -> tuple[str, str]:
     """Fill in format/niche from the Telegram headquarters settings."""
     try:
@@ -115,7 +130,14 @@ def build_script(
 ) -> str:
     fmt, niche_label = _resolve_format_and_niche(format, niche)
     is_long = fmt == "long"
-    fallback = _template_script_long(topic) if is_long else _template_script(topic)
+    is_reel = fmt == "reel"
+    fallback = (
+        _template_script_long(topic)
+        if is_long
+        else _template_script_reel(topic)
+        if is_reel
+        else _template_script(topic)
+    )
 
     try:
         from .provider_credentials import get_provider_secret, provider_status
@@ -137,6 +159,9 @@ def build_script(
             "one myth-versus-fact section, and a summary"
         )
         min_chars = 1500
+    elif is_reel:
+        budget = "105-140 words, about 45-60 seconds of narration, written for a dark cinematic Reel"
+        min_chars = 80
     else:
         budget = "130-150 words, about 60 seconds of narration"
         min_chars = 80
@@ -148,6 +173,13 @@ def build_script(
         "3) Insider facts: explain the main facts and the real mechanism in simple Hindi, in concrete steps.\n"
         "4) Ultimate truth: end the explanation with one memorable lesson.\n"
         "5) Discussion CTA: ask the viewer one genuine question and invite them to answer in the comments.\n"
+        + (
+            "For this Reel, use short punchy Hindi lines, a mysterious documentary tone, "
+            "and visual beats suitable for bold captions every 2-4 seconds.\n"
+            if is_reel
+            else ""
+        )
+        +
         "Rules: one core idea only; do not copy any existing creator, video or article; "
         "use only widely verifiable facts and never invent statistics, quotes or claims; "
         "spell numbers out as words (the script is read aloud by text-to-speech); "

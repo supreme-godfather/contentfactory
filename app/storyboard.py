@@ -23,10 +23,11 @@ MAX_CAPTION_LINE_CHARS = 42
 MAX_CAPTION_LINES = 2
 
 STYLE_ANCHOR = (
-    "Consistent original Hindi explainer style: same clean 2D illustrated "
-    "character design, same colour palette and same typography in every "
-    "scene; original artwork only, no real person's likeness, no copied "
-    "creator or stock-video look."
+    "Consistent original Hindi dark-cinematic faceless Reel style: charcoal "
+    "black, muted gold and deep red palette; dramatic side lighting; wolf, "
+    "marble, newspaper, clock, crowd and archival-symbol motifs; bold high-"
+    "contrast typography; original artwork only, no real person's likeness, "
+    "no copied creator or stock-video look."
 )
 
 # (stage, share of total duration, visual direction, narration job)
@@ -34,19 +35,19 @@ _STAGES: tuple[tuple[str, float, str, str], ...] = (
     (
         "hook",
         0.05,
-        "Open on the single most surprising visual for the topic; big readable headline text; no intro logo, no greeting.",
+        "Open on the single most surprising cinematic visual; bold two-line headline; no intro logo or greeting.",
         "Golden hook: a question or paradox in the first 3 seconds.",
     ),
     (
         "problem",
         0.15,
-        "Show the everyday problem in one clear scene; keep the frame uncluttered, one idea only.",
+        "Show the psychological tension or historical pattern in one moody, uncluttered scene.",
         "Name the viewer's problem in their own words.",
     ),
     (
         "disruption",
         0.15,
-        "Contrast visual: 'what people think' on one side, 'the real truth' on the other; visual change on the reveal.",
+        "Contrast visual: public story versus hidden mechanism, with a sharp visual reveal.",
         "Shatter the common assumption in one sentence.",
     ),
     (

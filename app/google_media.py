@@ -36,6 +36,9 @@ def _headers() -> dict[str, str]:
 
 def generate_voiceover(text: str, destination: Path) -> None:
     settings = get_settings()
+    from .hq import get_reel_voice
+
+    voice_name = get_reel_voice()
     response = httpx.post(
         "https://texttospeech.googleapis.com/v1/text:synthesize",
         headers=_headers(),
@@ -43,7 +46,7 @@ def generate_voiceover(text: str, destination: Path) -> None:
             "input": {"text": text[:4800]},
             "voice": {
                 "languageCode": "hi-IN",
-                "name": settings.google_tts_voice,
+                "name": voice_name or settings.google_tts_voice,
                 "ssmlGender": "FEMALE",
             },
             "audioConfig": {"audioEncoding": "MP3", "speakingRate": 0.96},
@@ -108,8 +111,10 @@ def create_job_assets(job_id: str, topic: str, script: str, media_root: Path) ->
     image = media_root / f"{job_id}-scene-1.png"
     generate_voiceover(script, voiceover)
     generate_image(
-        f"Original vertical documentary illustration about {topic}; Hindi educational explainer, "
-        "cinematic lighting, clean composition, no text, no logos, no real person likeness.",
+        f"Original vertical dark-cinematic documentary artwork about {topic}; faceless symbolic "
+        "psychology/history imagery, charcoal black with muted gold and restrained deep red, "
+        "dramatic side lighting, high contrast, uncluttered composition, no text, no logos, "
+        "no real person likeness, no copied creator style.",
         image,
     )
     return {"voiceover": voiceover.name, "image": image.name}
@@ -141,8 +146,10 @@ def _create_openai_assets(job_id: str, topic: str, script: str, media_root: Path
         json={
             "model": "gpt-image-1",
             "prompt": (
-                f"Original vertical documentary illustration about {topic}; Hindi educational "
-                "explainer, cinematic lighting, clean composition, no text, no logos."
+                f"Original vertical dark-cinematic documentary artwork about {topic}; faceless "
+                "symbolic psychology/history imagery, charcoal black with muted gold and restrained "
+                "deep red, dramatic side lighting, high contrast, uncluttered composition, no text, "
+                "no logos, no real person likeness, no copied creator style."
             ),
             "size": "1024x1536",
             "quality": "medium",
