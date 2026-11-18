@@ -1,6 +1,7 @@
 param(
-    [string]$FactoryUrl = "https://factory-api-production-2fae.up.railway.app",
-    [int]$PollSeconds = 30
+    [string]$FactoryUrl = "https://contentfactory-production-511548c5.up.railway.app",
+    [int]$PollSeconds = 30,
+    [switch]$UseFactoryEnvToken
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,11 +26,36 @@ $python = Get-Command py -ErrorAction SilentlyContinue
 if (-not $python) {
     throw "Python Launcher 'py' was not found. Install Python 3.11+ from python.org and enable the launcher."
 }
+$ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+if (-not $ffmpeg) {
+    throw "ffmpeg.exe was not found on PATH. Install FFmpeg and restart PowerShell before installing the worker."
+}
+$ffprobe = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+if (-not $ffprobe) {
+    throw "ffprobe.exe was not found on PATH. Install an FFmpeg build that includes ffprobe before installing the worker."
+}
 
-$secureToken = Read-Host "Paste WORKER_TOKEN (input is hidden; never send it in chat)" -AsSecureString
-$tokenPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
-$token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr)
-[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenPtr)
+if ($UseFactoryEnvToken) {
+    $factoryEnvPath = Join-Path (Split-Path $PSScriptRoot -Parent) ".env"
+    if (-not (Test-Path -LiteralPath $factoryEnvPath)) {
+        throw "The factory .env file was not found. Run this switch only for a colocated local API."
+    }
+    $match = [regex]::Match(
+        (Get-Content -LiteralPath $factoryEnvPath -Raw),
+        "(?m)^\s*WORKER_TOKEN\s*=\s*([^\r\n#]+)\s*$"
+    )
+    if (-not $match.Success) {
+        throw "WORKER_TOKEN is missing from the factory .env file."
+    }
+    $token = $match.Groups[1].Value.Trim()
+    Remove-Variable match, factoryEnvPath
+} else {
+    $secureToken = Read-Host "Paste WORKER_TOKEN (input is hidden; never send it in chat)" -AsSecureString
+    $tokenPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+    $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr)
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenPtr)
+    Remove-Variable secureToken, tokenPtr
+}
 if ([string]::IsNullOrWhiteSpace($token)) {
     throw "WORKER_TOKEN is required."
 }
@@ -59,11 +85,18 @@ $shortcut.WorkingDirectory = $installRoot
 $shortcut.WindowStyle = 7
 $shortcut.Save()
 
+$oldProcesses = Get-CimInstance Win32_Process -Filter "name='python.exe'" |
+    Where-Object {
+        $_.CommandLine -and $_.CommandLine.Contains($workerPath)
+    }
+foreach ($process in $oldProcesses) {
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+}
 Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot -WindowStyle Minimized
 
 Write-Host "Installed and started the user Startup worker."
 Write-Host "Factory URL: $FactoryUrl"
 Write-Host "Worker files: $installRoot"
-Write-Host "The worker uses outbound HTTPS only; no inbound port was opened."
+Write-Host "The worker makes outbound API requests only; no inbound port was opened."
 Write-Host "Startup shortcut: $startupShortcut"
 Read-Host "Installation complete. Press Enter to close"

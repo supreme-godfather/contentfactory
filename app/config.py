@@ -1,5 +1,7 @@
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +15,7 @@ class Settings(BaseSettings):
     worker_poll_seconds: int = 30
     worker_lease_seconds: int = 900
     telegram_bot_token: str = ""
+    telegram_mode: Literal["webhook", "polling"] = "webhook"
     telegram_webhook_secret: str = ""
     telegram_owner_ids: str = "1112018699"
     telegram_language: str = "english"
@@ -22,6 +25,8 @@ class Settings(BaseSettings):
     youtube_redirect_uri: str = ""
     token_encryption_key: str = ""
     media_root: str = "data/media"
+    backup_restore_enabled: bool = False
+    backup_max_mb: int = Field(default=1024, ge=1, le=10240)
     max_media_mb: int = 250
     youtube_privacy_status: str = "private"
     youtube_analytics_days: int = 30
@@ -37,6 +42,8 @@ class Settings(BaseSettings):
     instagram_user_id: str = ""
     instagram_access_token: str = ""
     instagram_graph_version: str = "v21.0"
+    meta_app_id: str = ""
+    meta_app_secret: str = ""
     reel_profile_name: str = "quiet_wolf_hindi"
     reel_default_duration_seconds: int = 55
     automation_enabled: bool = False

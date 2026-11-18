@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+*.db
+*.sqlite*
+*.mp4
+media/
+secrets/
+.git/

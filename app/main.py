@@ -2,13 +2,16 @@ from contextlib import asynccontextmanager
 import asyncio
 import json
 from pathlib import Path
+import tempfile
 
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from .automation import automation_enabled, automation_loop, run_automation_cycle, set_automation_enabled
+from .backups import create_backup_archive, restore_backup_archive
 from .config import get_settings
 from .db import ContentJob, SessionLocal, init_db
 from sqlalchemy import select
@@ -16,21 +19,26 @@ from .discovery import add_analytics_snapshot, add_trend, analytics_recommendati
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
 from .services import approve_job, claim_render_job, complete_render_job, create_job, fail_render_job, generate_content, is_paused, list_jobs, publish_job, retry_job, worker_heartbeat
-from .telegram import configure_webhook, handle_update
+from .telegram import configure_webhook, handle_update, telegram_polling_loop
 from .youtube_oauth import connection_status, create_authorization_url, exchange_code, sync_channel_analytics
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    webhook_task = asyncio.create_task(configure_webhook())
+    settings = get_settings()
+    telegram_task = asyncio.create_task(
+        telegram_polling_loop()
+        if settings.telegram_mode == "polling"
+        else configure_webhook()
+    )
     automation_task = asyncio.create_task(automation_loop())
     try:
         yield
     finally:
-        for task in (webhook_task, automation_task):
+        for task in (telegram_task, automation_task):
             task.cancel()
-        for task in (webhook_task, automation_task):
+        for task in (telegram_task, automation_task):
             try:
                 await task
             except asyncio.CancelledError:
@@ -42,7 +50,7 @@ app = FastAPI(title="Hindi Content Factory", version="0.1.0", lifespan=lifespan)
 
 class GenerateRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
-    platform: str = Field(default="both", pattern="^(youtube|instagram|both)$")
+    platform: str | None = Field(default=None, pattern="^(youtube|instagram|both)$")
     brand: str = Field(default="learn_with_elite_explainer", max_length=80)
 
 
@@ -77,39 +85,96 @@ def ready() -> dict[str, str]:
 
 @app.get("/media/{filename}")
 def public_media(filename: str) -> FileResponse:
-    """Serve completed MP4s for official platform fetches.
+    """Serve completed videos and generated platform covers.
 
-    Only completed job filenames are accepted; source assets and arbitrary
-    paths are never exposed.
+    Only filenames explicitly attached to a completed job are accepted;
+    source assets and arbitrary paths are never exposed.
     """
-    if Path(filename).name != filename or not filename.endswith(".mp4"):
+    if Path(filename).name != filename or not filename.endswith((".mp4", ".jpg")):
         raise HTTPException(status_code=404, detail="Media not found")
     with SessionLocal() as session:
-        job = session.scalar(select(ContentJob).where(ContentJob.render_path.endswith(filename)))
+        if filename.endswith(".mp4"):
+            job = session.scalar(select(ContentJob).where(ContentJob.render_path.endswith(filename)))
+        else:
+            job = session.scalar(
+                select(ContentJob).where(
+                    ContentJob.status.in_(("approved", "published")),
+                    ContentJob.metadata_json.contains(f'"{filename}"'),
+                )
+            )
+            if job is not None:
+                try:
+                    covers = json.loads(job.metadata_json or "{}").get("thumbnails", {})
+                except json.JSONDecodeError:
+                    covers = {}
+                if filename not in covers.values():
+                    job = None
         if job is None or job.status not in {"approved", "published"}:
             raise HTTPException(status_code=404, detail="Media not found")
     path = (Path(get_settings().media_root).resolve() / filename).resolve()
     media_root = Path(get_settings().media_root).resolve()
     if path.parent != media_root or not path.is_file():
         raise HTTPException(status_code=404, detail="Media not found")
-    return FileResponse(path, media_type="video/mp4")
+    media_type = "video/mp4" if filename.endswith(".mp4") else "image/jpeg"
+    return FileResponse(path, media_type=media_type)
 
 @app.get("/api/status")
 def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
     settings = get_settings()
-    from .hq import is_mock_publishing
+    from .hq import get_publish_target, is_mock_publishing
     from .platform_credentials import platform_enabled
 
     return {
         "paused": is_paused(),
         "mock_publishing": is_mock_publishing(),
-        "youtube_enabled": settings.youtube_enabled,
+        "youtube_enabled": platform_enabled("youtube", settings.youtube_enabled),
         "instagram_enabled": platform_enabled("instagram", settings.instagram_enabled),
         "daily_publication_limit": settings.max_daily_publications,
         "automation_enabled": automation_enabled(),
-        "platform": "instagram",
+        "platform": get_publish_target(),
         "youtube_oauth": connection_status(),
     }
+
+
+@app.get("/api/backup/export")
+def backup_export(_: None = Depends(require_admin_api_token)) -> FileResponse:
+    """Create an authenticated portable database-and-media archive."""
+    path = create_backup_archive()
+    return FileResponse(
+        path,
+        media_type="application/gzip",
+        filename=path.name,
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
+
+
+@app.post("/api/backup/restore")
+async def backup_restore(
+    backup: UploadFile = File(...),
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, int]:
+    """Restore only when explicitly enabled and the destination is empty."""
+    settings = get_settings()
+    if not settings.backup_restore_enabled:
+        raise HTTPException(status_code=403, detail="backup_restore_disabled")
+    archive_path: Path | None = None
+    size = 0
+    try:
+        with tempfile.NamedTemporaryFile(prefix="factory-restore-", suffix=".tar.gz", delete=False) as handle:
+            archive_path = Path(handle.name)
+            while chunk := await backup.read(1024 * 1024):
+                size += len(chunk)
+                if size > settings.backup_max_mb * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="backup_too_large")
+                handle.write(chunk)
+        try:
+            return restore_backup_archive(archive_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await backup.close()
+        if archive_path is not None:
+            archive_path.unlink(missing_ok=True)
 
 
 @app.get("/api/youtube/oauth/authorize")
@@ -121,7 +186,11 @@ def youtube_authorize(_: None = Depends(require_admin_api_token)) -> dict[str, s
 
 
 @app.get("/oauth/youtube/callback")
-async def youtube_callback(code: str | None = None, state: str | None = None, error: str | None = None) -> dict[str, str]:
+async def youtube_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
     if error:
         raise HTTPException(status_code=400, detail=f"Google OAuth denied access: {error}")
     if not code or not state:
@@ -130,7 +199,21 @@ async def youtube_callback(code: str | None = None, state: str | None = None, er
         await exchange_code(code, state)
     except (ValueError, RuntimeError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"status": "authorized", "provider": "youtube"}
+    return HTMLResponse(
+        content=(
+            "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>YouTube connected</title>"
+            "<body style=\"font:16px system-ui;max-width:560px;margin:12vh auto;padding:24px;"
+            "background:#101820;color:#f5f7fa;border-radius:16px\">"
+            "<h1>YouTube connected</h1>"
+            "<p>Your authorization was saved securely. Return to your private Telegram bot, "
+            "open <b>Controls → Channel accounts</b>, and tap "
+            "<b>Verify YouTube channel</b>.</p>"
+            "<p>This does not publish anything. Posting remains behind your bot controls "
+            "and approval step.</p></body></html>"
+        )
+    )
 
 
 @app.get("/api/jobs")
@@ -153,7 +236,9 @@ def jobs(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
 @app.post("/api/jobs")
 def generate(request: GenerateRequest, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
     try:
-        job = create_job(request.topic, request.platform, request.brand)
+        from .hq import get_publish_target
+
+        job = create_job(request.topic, request.platform or get_publish_target(), request.brand)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "topic": job.topic}
@@ -331,6 +416,14 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "format": metadata.get("format", "vertical_short"),
             "script": job.script_text or "",
             "title": metadata.get("title", job.topic),
+            "thumbnail_names": {
+                platform: f"{job.id}-{platform}.jpg"
+                for platform in (
+                    ["youtube", "instagram"]
+                    if job.platform == "both"
+                    else [job.platform]
+                )
+            },
             "story_arc": metadata.get("story_arc", ["problem", "stakes", "solution", "how", "payoff"]),
             "caption_cues": metadata.get("caption_cues", []),
             "assets": metadata.get("assets", {}),
@@ -415,6 +508,80 @@ def worker_upload_media(
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Media file is empty or invalid")
     return {"render_path": str(destination)}
+
+
+@app.post("/api/worker/{job_id}/thumbnail/{platform}")
+def worker_upload_thumbnail(
+    job_id: str,
+    platform: str,
+    file: UploadFile = File(...),
+    _: None = Depends(require_worker_token),
+) -> dict[str, str]:
+    if platform not in {"youtube", "instagram"}:
+        raise HTTPException(status_code=400, detail="Unsupported thumbnail platform")
+    if file.content_type not in {"image/jpeg", "application/octet-stream"}:
+        raise HTTPException(status_code=415, detail="Only JPEG thumbnails are accepted")
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job or job.status != "rendering":
+            raise HTTPException(status_code=409, detail="Job is not currently rendering")
+    settings = get_settings()
+    media_root = Path(settings.media_root).resolve()
+    media_root.mkdir(parents=True, exist_ok=True)
+    filename = f"{job_id}-{platform}.jpg"
+    destination = (media_root / filename).resolve()
+    if destination.parent != media_root:
+        raise HTTPException(status_code=400, detail="Invalid thumbnail destination")
+    max_bytes = 8 * 1024 * 1024
+    try:
+        try:
+            existing_destination_size = destination.stat().st_size
+        except FileNotFoundError:
+            existing_destination_size = 0
+        existing_total = sum(
+            existing_file.stat().st_size
+            for existing_file in media_root.rglob("*")
+            if existing_file.is_file()
+        ) - existing_destination_size
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Media storage is unavailable") from exc
+    total = 0
+    prefix = b""
+    try:
+        with destination.open("wb") as output:
+            while True:
+                chunk = file.file.read(64 * 1024)
+                if not chunk:
+                    break
+                if len(prefix) < 3:
+                    prefix = (prefix + chunk)[:3]
+                total += len(chunk)
+                if total > max_bytes:
+                    destination.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail="Thumbnail exceeds 8 MB")
+                if existing_total + total > max(0, settings.max_storage_gb) * 1024 * 1024 * 1024:
+                    destination.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail="Storage limit exceeded")
+                output.write(chunk)
+    finally:
+        file.file.close()
+    if total < 1024 or prefix != b"\xff\xd8\xff":
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Thumbnail is not a valid JPEG")
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job or job.status != "rendering":
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=409, detail="Job is no longer rendering")
+        try:
+            metadata = json.loads(job.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        thumbnails = metadata.setdefault("thumbnails", {})
+        thumbnails[platform] = filename
+        job.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        session.commit()
+    return {"filename": filename}
 
 
 @app.post("/api/worker/{job_id}/fail")

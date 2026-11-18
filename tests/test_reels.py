@@ -18,8 +18,10 @@ def isolated_database(monkeypatch, tmp_path: Path):
 
 
 def test_reel_profile_is_the_default_format():
+    from app.db import init_db
     from app.hq import get_format, get_format_key
 
+    init_db()
     assert get_format_key() == "reel"
     info = get_format()
     assert info["format_code"] == "instagram_reel"
@@ -42,6 +44,35 @@ def test_generated_instagram_job_contains_reel_metadata():
     assert metadata["aspect_ratio"] == "9:16"
     assert metadata["approval_required"] is True
     assert "#Mindset" in metadata["hashtags"]
+    assert metadata["youtube"]["tags"]
+    assert "#Mindset" in metadata["instagram"]["caption"]
+    assert len(metadata["youtube"]["title"]) <= 100
+
+
+def test_automation_uses_selected_multi_platform_target():
+    from app.automation import run_automation_cycle
+    from app.db import SessionLocal, TrendCandidate
+    from app.hq import set_publish_target
+    from app.services import list_jobs, set_paused
+
+    set_publish_target("both")
+    set_paused(False)
+    with SessionLocal() as session:
+        session.add(
+            TrendCandidate(
+                topic="A shared platform trend",
+                total_score=100,
+                originality_score=100,
+                originality_required=75,
+            )
+        )
+        session.commit()
+
+    outcome = run_automation_cycle()
+
+    assert outcome["platform"] == "both"
+    assert outcome["jobs_generated"] == 1
+    assert any(job.topic == "A shared platform trend" and job.platform == "both" for job in list_jobs())
 
 
 def test_storyboard_uses_dark_cinematic_anchor():

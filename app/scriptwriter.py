@@ -96,6 +96,25 @@ def _template_script_long(topic: str) -> str:
 
 
 def _template_script_reel(topic: str) -> str:
+    lowered_topic = topic.lower()
+    if any(
+        marker in lowered_topic
+        for marker in ("साइबर", "फिशिंग", "phishing", "cybersecurity", "cyber security", "otp")
+    ):
+        return (
+            "क्या बैंक के नाम से आया हर संदेश सच में बैंक से होता है?\n\n"
+            "फिशिंग में ठग नकली लिंक भेजते हैं, ताकि आप खुद पासवर्ड या OTP दर्ज कर दें। "
+            "संदेश पर दिखने वाला नाम भरोसे का सबूत नहीं होता।\n\n"
+            "लिंक खोलने से पहले भेजने वाले और वेबसाइट का पता ध्यान से जाँचें। "
+            "अजीब spelling, जल्दी करने का दबाव या इनाम का लालच खतरे के संकेत हैं। "
+            "संदेह हो तो लिंक न खोलें—अपने बैंक की official app खुद खोलें।\n\n"
+            "OTP, PIN या password किसी के साथ साझा न करें। असली बैंक कर्मचारी भी "
+            "आपसे OTP नहीं माँगता। अगर गलती से जानकारी दे दी है, तो तुरंत बैंक की "
+            "official helpline पर संपर्क करें और खाते की गतिविधि जाँचें।\n\n"
+            "याद रखें: रुकें, जाँचें, फिर tap करें। आपको किसी संदेश में सबसे पहले "
+            "कौन-सा खतरे का संकेत दिखेगा? Comment में बताइए।\n\n"
+            f"{CLOSING_LINES}"
+        )
     return (
         f"रुकिए—क्या {topic} के पीछे कोई ऐसी बात है जिसे हम अक्सर नज़रअंदाज़ कर देते हैं?\n\n"
         f"कई बार {topic} को लोग सिर्फ़ एक सीधी-सादी बात समझते हैं। "
@@ -140,12 +159,23 @@ def build_script(
     )
 
     try:
-        from .provider_credentials import get_provider_secret, provider_status
+        from .provider_credentials import (
+            get_provider_for_role,
+            get_provider_secret,
+            no_paid_providers_enabled,
+            provider_cooldown_until,
+        )
 
-        status = provider_status()
-        if status.get("selected") != "openai":
+        provider = get_provider_for_role("script")
+        if provider == "template":
             return fallback
-        api_key = get_provider_secret("openai")
+        if no_paid_providers_enabled() and provider not in {"gemini"}:
+            return fallback
+        if provider in {"gemini", "huggingface"} and provider_cooldown_until(provider) is not None:
+            return fallback
+        if provider not in {"openai", "gemini", "huggingface"}:
+            return fallback
+        api_key = get_provider_secret(provider)
         if not api_key:
             return fallback
     except Exception:
@@ -188,26 +218,84 @@ def build_script(
     try:
         from .provider_credentials import get_provider_secret
 
-        api_key = get_provider_secret("openai")
+        api_key = get_provider_secret(provider)
         if not api_key:
             return fallback
-        response = httpx.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": "You write original Hindi explainer scripts."},
-                    {"role": "user", "content": prompt},
-                ],
-            },
-            timeout=60,
-        )
+        if provider == "gemini":
+            response = httpx.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                "gemini-3.5-flash-lite:generateContent",
+                headers={"x-goog-api-key": api_key},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "systemInstruction": {
+                        "parts": [{"text": "You write original Hindi explainer scripts."}]
+                    },
+                    "generationConfig": {"temperature": 0.7},
+                },
+                timeout=60,
+            )
+        elif provider == "huggingface":
+            response = httpx.post(
+                "https://router.huggingface.co/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "Qwen/Qwen2.5-7B-Instruct",
+                    "messages": [
+                        {"role": "system", "content": "You write original Hindi explainer scripts."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 1800 if is_long else 700,
+                },
+                timeout=90,
+            )
+        else:
+            response = httpx.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {"role": "system", "content": "You write original Hindi explainer scripts."},
+                        {"role": "user", "content": prompt},
+                    ],
+                },
+                timeout=60,
+            )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        if provider == "gemini":
+            parts = (
+                response.json()
+                .get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [])
+            )
+            content = "\n".join(
+                part["text"]
+                for part in parts
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+        else:
+            content = response.json()["choices"][0]["message"]["content"]
         if not isinstance(content, str) or len(content.strip()) < min_chars:
             return fallback
         return content.strip()
-    except Exception:
-        logger.debug("OpenAI script generation failed; using template", exc_info=True)
+    except Exception as exc:
+        try:
+            from .provider_credentials import is_provider_quota_error, mark_provider_quota_error
+
+            if is_provider_quota_error(exc):
+                until = mark_provider_quota_error(provider, exc)
+                logger.warning(
+                    "%s quota/rate limit reached; cooling down until %s",
+                    provider,
+                    until.isoformat(),
+                )
+        except Exception:
+            logger.debug("Could not record provider quota cooldown", exc_info=True)
+        logger.debug("%s script generation failed; using template", provider, exc_info=True)
         return fallback

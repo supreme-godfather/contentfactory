@@ -26,7 +26,16 @@ class PublicationResult:
 class Publisher:
     platform: str
 
-    def publish(self, *, title: str, description: str, media_path: str) -> PublicationResult:
+    def publish(
+        self,
+        *,
+        title: str,
+        description: str,
+        media_path: str,
+        tags: list[str] | None = None,
+        thumbnail_path: str | None = None,
+        cover_url: str | None = None,
+    ) -> PublicationResult:
         raise NotImplementedError
 
 
@@ -34,7 +43,11 @@ class MockPublisher(Publisher):
     def __init__(self, platform: str):
         self.platform = platform
 
-    def publish(self, *, title: str, description: str, media_path: str) -> PublicationResult:
+    def publish(
+        self, *, title: str, description: str, media_path: str,
+        tags: list[str] | None = None, thumbnail_path: str | None = None,
+        cover_url: str | None = None,
+    ) -> PublicationResult:
         return PublicationResult(
             status="published",
             remote_id=f"mock-{self.platform}-{abs(hash(media_path))}",
@@ -47,7 +60,11 @@ class DisabledPublisher(Publisher):
     def __init__(self, platform: str):
         self.platform = platform
 
-    def publish(self, *, title: str, description: str, media_path: str) -> PublicationResult:
+    def publish(
+        self, *, title: str, description: str, media_path: str,
+        tags: list[str] | None = None, thumbnail_path: str | None = None,
+        cover_url: str | None = None,
+    ) -> PublicationResult:
         return PublicationResult(
             status="blocked",
             detail=f"{self.platform} publishing is disabled until official authorization is configured.",
@@ -57,7 +74,11 @@ class DisabledPublisher(Publisher):
 class YouTubePublisher(Publisher):
     platform = "youtube"
 
-    def publish(self, *, title: str, description: str, media_path: str) -> PublicationResult:
+    def publish(
+        self, *, title: str, description: str, media_path: str,
+        tags: list[str] | None = None, thumbnail_path: str | None = None,
+        cover_url: str | None = None,
+    ) -> PublicationResult:
         path = Path(media_path)
         if not path.is_file():
             return PublicationResult(status="blocked", detail="Rendered media is not available on the API service.")
@@ -71,6 +92,7 @@ class YouTubePublisher(Publisher):
                     "title": title[:100],
                     "description": description[:5000],
                     "categoryId": "27",
+                    "tags": (tags or [])[:50],
                 },
                 "status": {
                     "privacyStatus": settings.youtube_privacy_status
@@ -117,17 +139,68 @@ class YouTubePublisher(Publisher):
                 if response is None or response.status_code not in {200, 201}:
                     return PublicationResult(status="blocked", detail="YouTube upload did not complete.")
                 payload = response.json()
-            video_id = payload.get("id")
-            if not video_id:
-                return PublicationResult(status="blocked", detail="YouTube returned no video ID.")
+                video_id = payload.get("id")
+                if not video_id:
+                    return PublicationResult(status="blocked", detail="YouTube returned no video ID.")
+                thumbnail_detail = "Custom thumbnail applied."
+                if thumbnail_path:
+                    try:
+                        self._set_thumbnail(client, token, video_id, Path(thumbnail_path))
+                    except (httpx.HTTPError, OSError, RuntimeError) as exc:
+                        thumbnail_detail = (
+                            f"Video uploaded, but thumbnail setup needs attention: "
+                            f"{type(exc).__name__}."
+                        )
             return PublicationResult(
                 status="published",
                 remote_id=video_id,
                 remote_url=f"https://youtu.be/{video_id}",
-                detail="Published through the official YouTube Data API.",
+                detail=f"Published through the official YouTube Data API. {thumbnail_detail}",
             )
         except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
             return PublicationResult(status="blocked", detail=f"YouTube publication failed: {str(exc)[:300]}")
+
+    @staticmethod
+    def _set_thumbnail(
+        client: httpx.Client,
+        token: str,
+        video_id: str,
+        thumbnail_path: Path,
+    ) -> None:
+        if not thumbnail_path.is_file():
+            raise RuntimeError("The generated thumbnail file is missing.")
+        ready = False
+        for attempt in range(12):
+            response = client.get(
+                "https://www.googleapis.com/youtube/v3/videos",
+                params={"part": "processingDetails", "id": video_id},
+                headers={"Authorization": f"******"},
+            )
+            response.raise_for_status()
+            items = response.json().get("items") or []
+            status = (
+                items[0].get("processingDetails", {}).get("processingStatus")
+                if items else None
+            )
+            if status == "succeeded":
+                ready = True
+                break
+            if status == "failed":
+                raise RuntimeError("YouTube reported that video processing failed.")
+            if attempt < 11:
+                time.sleep(5)
+        if not ready:
+            raise RuntimeError("YouTube video processing did not finish before thumbnail upload.")
+        response = client.post(
+            "https://www.googleapis.com/upload/youtube/v3/thumbnails/set",
+            params={"videoId": video_id, "uploadType": "media"},
+            headers={
+                "Authorization": f"******",
+                "Content-Type": "image/jpeg",
+            },
+            content=thumbnail_path.read_bytes(),
+        )
+        response.raise_for_status()
 
 
 class InstagramPublisher(Publisher):
@@ -141,7 +214,16 @@ class InstagramPublisher(Publisher):
 
     platform = "instagram"
 
-    def publish(self, *, title: str, description: str, media_path: str) -> PublicationResult:
+    def publish(
+        self,
+        *,
+        title: str,
+        description: str,
+        media_path: str,
+        tags: list[str] | None = None,
+        thumbnail_path: str | None = None,
+        cover_url: str | None = None,
+    ) -> PublicationResult:
         settings = get_settings()
         access_token = get_platform_secret("instagram") or settings.instagram_access_token
         user_id = get_platform_value("instagram", "user_id") or settings.instagram_user_id
@@ -175,7 +257,15 @@ class InstagramPublisher(Publisher):
         version = settings.instagram_graph_version or "v21.0"
         base = f"https://graph.facebook.com/{version}"
         token = access_token
-        caption = f"{title}\n\n{description}"[:2200]
+        caption = (description or title)[:2200]
+        if cover_url:
+            cover = urlparse(cover_url)
+            if (
+                cover.scheme != "https"
+                or cover.netloc != expected_host
+                or not cover.path.startswith("/media/")
+            ):
+                return PublicationResult(status="blocked", detail="Instagram cover must use this factory's HTTPS /media route.")
         try:
             with httpx.Client(timeout=60) as client:
                 create = client.post(
@@ -185,6 +275,7 @@ class InstagramPublisher(Publisher):
                         "media_type": "REELS",
                         "video_url": media_path,
                         "caption": caption,
+                        **({"cover_url": cover_url} if cover_url else {}),
                     },
                 )
                 create.raise_for_status()
@@ -243,6 +334,9 @@ def get_publisher(platform: str) -> Publisher:
 
         if platform_enabled("instagram", settings.instagram_enabled):
             return InstagramPublisher()
-    if platform == "youtube" and settings.youtube_enabled:
-        return YouTubePublisher()
+    if platform == "youtube":
+        from .platform_credentials import platform_enabled
+
+        if platform_enabled("youtube", settings.youtube_enabled):
+            return YouTubePublisher()
     return DisabledPublisher(platform)

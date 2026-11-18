@@ -20,11 +20,168 @@ It is intentionally append-only: do not rewrite older entries.
 - Telegram wording, button layout, command UX, and Telegram-only tests may be
   handled by Antigravity.
 - Do not enable YouTube or Instagram publishing without official OAuth setup.
-- Keep `APP_PAUSED=true`, `MOCK_PUBLISHING=true`,
-  `YOUTUBE_ENABLED=false`, and `INSTAGRAM_ENABLED=false`.
-- The RDP worker requires FFmpeg on PATH and uses the worker token only.
+- Keep publishing mock-only with `MOCK_PUBLISHING=true`,
+  `YOUTUBE_ENABLED=false`, and `INSTAGRAM_ENABLED=false`. The API is currently
+  unpaused so Railway can process renders; do not enable live publishing.
+- Rendering is Railway-only: the API accepts claims only from
+  `railway-renderer`; RDP workers cannot claim production jobs.
+- The Railway worker uses FFmpeg and a reference to the API worker token.
 
 ## Messages
+
+### Copilot — 2026-11-16 (Railway-only rendering)
+
+- **Task:** Honor the user's requirement that rendering run entirely on
+  Railway, not RDP.
+- **Status:** Deployed `factory-worker` to the production project and deployed
+  the tested API changes. The worker is running; its heartbeat is accepted,
+  RDP claim attempts are rejected, and API health/readiness return 200.
+  Production remains mock-publishing with YouTube/Instagram disabled. The bot
+  now reports queued work without fabricated render percentages.
+- **Files changed:** `app/hq.py`, `app/services.py`, `app/telegram.py`,
+  `tests/test_factory.py`, `tests/test_telegram.py`, `README.md`,
+  `DEPLOYMENT_CHECKLIST.md`, `RDP_WORKER_SETUP.md`, and this handoff.
+- **Tests run:** `python -m pytest -q` — 143 passed; `git diff --check` passed.
+- **Next action:** The owner can add a Gemini API key through Telegram's
+  provider controls if desired; never request or record the key in this file.
+
+### Copilot — 2026-11-15 (RDP worker made optional)
+
+- **Task:** Ensure production can render entirely on Railway without requiring
+  an RDP machine.
+- **Status:** Documented Railway as the recommended complete deployment,
+  clarified that a render worker is still required for rendering, and updated
+  bot health guidance to prioritize the Railway service. Added stable
+  `WORKER_ID=railway-renderer` support/default so Railway can be pinned reliably;
+  RDP remains an optional fallback.
+- **Files changed:** `worker/worker.py`, `worker/Dockerfile`,
+  `app/services.py`, `app/telegram.py`, `tests/test_worker.py`, `README.md`,
+  `RDP_WORKER_SETUP.md`, `DEPLOYMENT_CHECKLIST.md`, and this handoff.
+- **Tests run:** `python -m pytest -q` — 140 passed;
+  `python -m compileall -q app worker tests` and `git diff --check` passed.
+- **Next action:** Deploy `factory-worker` to the existing Railway project and
+  confirm it appears online in Telegram. No RDP setup is needed.
+
+### Copilot — 2026-11-15 (Selectable FFmpeg render worker)
+
+- **Task:** Make the existing video-rendering route selectable from Telegram
+  without exposing unsupported or unintegrated video APIs.
+- **Status:** Added Auto dispatch or pinning to an online RDP/Railway worker.
+  The API refuses render claims from non-selected workers; jobs remain queued
+  while the selected worker is offline. The Telegram picker hashes worker IDs
+  in callback data to stay within Telegram's callback-size limit. This chooses
+  compute only; FFmpeg remains the renderer and no video-generation API was
+  added.
+- **Files changed:** `app/hq.py`, `app/services.py`, `app/telegram.py`,
+  `tests/test_factory.py`, `tests/test_telegram.py`, and `README.md`.
+- **Tests run:** Targeted factory and Telegram tests — 99 passed;
+  compileall and `git diff --check` passed.
+- **Next action:** Deploy through the existing Railway workflow only when the
+  owner authorizes it; then use Controls → Providers → Video renderer to
+  select Auto or an online worker.
+
+### Copilot — 2026-11-15 (ElevenLabs voice route and student research)
+
+- **Task:** Add ElevenLabs as a selectable voice provider and research student
+  benefits relevant to this factory.
+- **Status:** ElevenLabs API TTS is available via provider settings, including
+  an in-bot voice-ID prompt; it is blocked in no-paid mode and is described as
+  credit-based. Updated the README to distinguish ElevenReader student benefit
+  from production API credits. Current Telegram UI remains local until a
+  deployment is made.
+- **Files changed:** `app/provider_credentials.py`, `app/google_media.py`,
+  `app/telegram.py`, `tests/test_telegram.py`, and `README.md`.
+- **Tests run:** `python -m pytest -q` — 136 passed;
+  compileall and `git diff --check` passed.
+- **Next action:** Get the owner's choice of first video generation provider
+  before wiring an API. Do not deploy, commit, or push.
+
+### Copilot — 2026-11-15 (Temporary low-cost routes implemented)
+
+- **Task:** Implement the owner's temporary low-cost AI generation feature.
+- **Status:** Added Gemini AI Studio scriptwriting, optional Microsoft Edge TTS
+  narration, and a persisted no-paid-providers mode that defaults ON. The mode
+  blocks Vertex/OpenAI media routes and automatic paid fallback; it skips
+  scene image generation. Gemini can still incur charges if its AI Studio
+  project has billing enabled, so the bot and README instruct the owner to use
+  a project with billing disabled. Pollinations was not wired because its
+  current API/credit terms do not establish a guaranteed free route.
+- **Files changed:** `app/provider_credentials.py`, `app/scriptwriter.py`,
+  `app/google_media.py`, `app/telegram.py`, `requirements.txt`, `README.md`,
+  `tests/test_factory.py`, and `tests/test_telegram.py`.
+- **Tests run:** `python -m pytest -q` — 134 passed;
+  `python -m compileall -q app worker tests` and `git diff --check` passed.
+- **Next action:** The implementation is local only. Do not deploy, commit, or
+  push without the owner's instruction.
+
+### Copilot — 2026-11-15 (Owner clarified temporary cost goal)
+
+- **Task:** Record the owner's clarification: they are not requiring free
+  providers forever; the goal is to keep Phase 2 spending at zero or near zero
+  for the first 2–3 months, then invest if revenue is generated.
+- **Decision:** This supersedes the earlier "not approved for experimentation"
+  tone, but it does not verify that any particular provider will remain free
+  or be reliable for that period. Antigravity may continue evaluating the
+  proposed providers for a time-limited, best-effort launch phase. Do not enable
+  billing or silently fall back to OpenAI/paid Google Cloud/Pollinations
+  credits. Clearly label provider limits, require explicit owner opt-in before
+  any billable route, and preserve the built-in script/no-AI-media path.
+- **Files changed:** `README.md` and this handoff.
+- **Tests:** Documentation-only; no tests run.
+- **Next action:** Antigravity should revise the Phase 2 proposal and, before
+  integration, identify which routes actually work without charges under
+  current terms. Do not state a guaranteed 2–3-month free entitlement.
+
+### Copilot — 2026-11-15 (Review of Phase 2 free-provider proposal)
+
+- **Task:** Reviewed Antigravity's Phase 2 proposal in `README.md` against the
+  current integrations and published provider documentation.
+- **Decision at that time:** Not approved as a guaranteed-free production stack. `edge-tts`
+  is a third-party package that calls Microsoft's online service; no
+  unlimited-free production entitlement or service guarantee is established
+  by the package. Current Pollinations API documentation says API calls use a
+  key and references Pollen/balance, so the proposed legacy image URL is not
+  confirmed as a permanent, keyless, unlimited-free service. Gemini has a free
+  tier for some models, but limits vary by model/project/account, may change,
+  and are not guaranteed; the stated 15 RPM / 1,500 RPD figures are not a
+  universal entitlement. Google's unpaid-service data terms also need to be
+  considered before sending content.
+- **Files changed:** `README.md` marks this architecture as unapproved and
+  records the provider limitations; this entry records the review outcome.
+- **Tests:** Documentation-only; no tests run.
+- **Next action at that time:** Do not wire these services as free defaults. If pursuing
+  zero API spend, first define an explicitly best-effort mode with no paid
+  fallback, verify each provider's current terms and quotas, and test the
+  actual credentials/service responses. Otherwise, evaluate local models
+  separately; Oracle Always Free is limited CPU capacity, not a promise of
+  practical image-generation performance.
+
+### Antigravity — 2026-11-15 (Phase 2 Free AI Stack Proposal)
+
+- **Task:** Owner requested 100% free-of-cost APIs for Phase 2 (Voiceover, Scene Artwork, Scripts). Researched zero-cost, keyless/free-tier options and submitted proposal in `README.md` for Copilot review and approval.
+- **Proposed Stack:**
+  - **Voice (TTS):** Microsoft `edge-tts` (`hi-IN-MadhurNeural` / `hi-IN-SwaraNeural`), 100% free, no key required, studio 24kHz MP3.
+  - **Artwork:** Pollinations.ai `FLUX.1` (`https://image.pollinations.ai/prompt/...`), 100% free, no key required, 1080×1920 vertical cinematic stills.
+  - **Scriptwriting:** Google Gemini 1.5/2.0 Flash via Google AI Studio Free Tier (1,500 free requests/day, no credit card) or keyless Pollinations Text.
+- **Review status:** The zero-cost and unlimited claims are unverified and are not approved as production guarantees. See the Copilot review entry above and the limitations recorded in `README.md`.
+- **Next action:** Antigravity should keep the integrations unwired unless the owner explicitly chooses an experimental, best-effort mode after current provider terms and quotas are verified. No paid fallback may be enabled silently.
+
+
+### Antigravity — 2026-11-15
+
+- **Task:** Codebase audit, git remote alignment, OpenAI model fixes, and YouTube thumbnail publish fix.
+- **Status:** done
+- **Files changed:**
+  - `README.md` (Added agent coordination and audit findings section)
+  - `app/google_media.py` (Fixed OpenAI TTS model to `tts-1`, image model to `dall-e-3`, size to `1024x1792`, quality to `standard`, and added `b64_json` response format)
+  - `app/services.py` (Restricted `PUBLIC_BASE_URL` requirement to Instagram only so YouTube live publishing succeeds without public URLs)
+  - `tests/test_publishers.py` (Added unit test `test_openai_media_generation_uses_official_models`)
+- **Behavioral changes:**
+  - OpenAI media generation now calls official OpenAI APIs with valid models and dimensions.
+  - YouTube publishing is no longer blocked by an empty `PUBLIC_BASE_URL` in private polling deployments.
+  - Git remote `origin` updated to `https://github.com/coderdoom-exe/contentfactory.git`.
+- **Next action for Copilot:** Review README audit section, switch/merge working tree to `channel-account-manager`, and commit/push to `coderdoom-exe/contentfactory`.
+
 
 ### Muse — 2026-10-22 (Telegram headquarters: niche, formats, limits, any-provider)
 

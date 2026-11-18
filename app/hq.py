@@ -15,6 +15,8 @@ Every getter falls back to the configured default when nothing has been
 set from Telegram yet, so behaviour before the owner touches a control is
 exactly the old behaviour.
 """
+import re
+
 from .config import get_settings
 from .db import FactorySetting, SessionLocal
 
@@ -54,6 +56,12 @@ FORMATS: dict[str, dict[str, object]] = {
     },
 }
 DEFAULT_FORMAT_KEY = "reel"
+
+PUBLISH_TARGETS = {
+    "instagram": "Instagram only",
+    "youtube": "YouTube only",
+    "both": "YouTube + Instagram",
+}
 
 DAILY_LIMIT_MIN = 1
 DAILY_LIMIT_MAX = 20
@@ -117,6 +125,33 @@ def set_format(key: str) -> dict[str, object]:
         raise ValueError("Unknown format")
     _set("default_format", key)
     return FORMATS[key]
+
+
+def get_publish_target() -> str:
+    target = _get("publish_target")
+    if target in PUBLISH_TARGETS:
+        return target
+    configured_target = get_settings().automation_platform
+    return configured_target if configured_target in PUBLISH_TARGETS else "instagram"
+
+
+def set_publish_target(target: str) -> str:
+    if target not in PUBLISH_TARGETS:
+        raise ValueError("Unsupported publishing destination")
+    _set("publish_target", target)
+    return target
+
+
+def get_render_worker_target() -> str:
+    return "railway-renderer"
+
+
+def set_render_worker_target(target: str) -> str:
+    value = target.strip()
+    if value not in {"auto", "railway-renderer"}:
+        raise ValueError("Only the Railway render worker is enabled")
+    _set("render_worker_target", "railway-renderer")
+    return "railway-renderer"
 
 
 def get_daily_publish_limit() -> int:

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -19,14 +20,99 @@ from .storyboard import (
 )
 
 
-def create_job(topic: str, platform: str, brand: str = "learn_with_elite_explainer") -> ContentJob:
+def _topic_hashtags(topic: str) -> list[str]:
+    words = re.findall(r"[^\W_]+", topic, flags=re.UNICODE)
+    tags = []
+    for word in words:
+        if len(word) < 2:
+            continue
+        tag = f"#{word[:28]}"
+        if tag.casefold() not in {item.casefold() for item in tags}:
+            tags.append(tag)
+        if len(tags) == 2:
+            break
+    return tags
+
+
+def _build_publish_metadata(
+    *,
+    topic: str,
+    format_key: str,
+    niche_label: str,
+) -> dict[str, object]:
+    topic = " ".join(topic.split())
+    title = f"{topic} | आसान हिंदी में"[:100]
+    topic_tags = _topic_hashtags(topic)
+    niche_lower = niche_label.casefold()
+    if "psychology" in niche_lower:
+        niche_tags = ["#Psychology", "#Mindset"]
+    elif "motivation" in niche_lower:
+        niche_tags = ["#Motivation", "#LifeLessons"]
+    elif "history" in niche_lower:
+        niche_tags = ["#History", "#Facts"]
+    elif "science" in niche_lower:
+        niche_tags = ["#Science", "#Facts"]
+    elif "money" in niche_lower or "business" in niche_lower:
+        niche_tags = ["#Finance", "#Business"]
+    else:
+        niche_tags = ["#Facts", "#Education"]
+    hashtags = list(dict.fromkeys([
+        *topic_tags,
+        *niche_tags,
+        "#Hindi",
+        "#Reels" if format_key == "reel" else "#YouTube",
+    ]))
+    description = (
+        f"{topic} को आसान हिंदी में समझिए।\n\n"
+        f"इस { 'Reel' if format_key == 'reel' else 'वीडियो' } में "
+        f"{niche_label} से जुड़ी कहानी, ज़रूरी बातें और मुख्य सीख देखें।\n\n"
+        "आपकी राय क्या है? नीचे comment में बताइए।\n\n"
+        "AI-assisted production; महत्वपूर्ण तथ्यों को प्रकाशन से पहले जाँचें।"
+    )
+    tags = list(dict.fromkeys([
+        topic,
+        f"{topic} hindi",
+        niche_label,
+        "Hindi explainer",
+        "Hindi educational video",
+    ]))
+    while sum(len(tag) + 1 for tag in tags) > 450:
+        tags.pop()
+    youtube_description = f"{description}\n\n{' '.join(hashtags[:3])}"
+    instagram_caption = f"{title}\n\n{description}\n\n{' '.join(hashtags)}"
+    return {
+        "title": title,
+        "description": youtube_description,
+        "hashtags": hashtags,
+        "tags": tags,
+        "youtube": {
+            "title": title,
+            "description": youtube_description,
+            "tags": tags,
+        },
+        "instagram": {
+            "caption": instagram_caption[:2200],
+            "hashtags": hashtags,
+        },
+    }
+
+
+def create_job(
+    topic: str,
+    platform: str,
+    brand: str = "learn_with_elite_explainer",
+    request_id: str | None = None,
+) -> ContentJob:
     clean_topic = " ".join(topic.split()).strip()
     if not clean_topic or len(clean_topic) > 240:
         raise ValueError("Topic must contain 1-240 non-whitespace characters")
     if platform not in {"youtube", "instagram", "both"}:
         raise ValueError("Platform must be youtube, instagram, or both")
 
-    key = sha256(f"{brand}:{platform}:{clean_topic.lower()}".encode()).hexdigest()
+    idempotency_scope = f"{brand}:{platform}:{clean_topic.lower()}"
+    if request_id is not None:
+        idempotency_scope = f"{idempotency_scope}:{request_id}"
+    key = sha256(idempotency_scope.encode()).hexdigest()
     with SessionLocal() as session:
         existing = session.scalar(select(ContentJob).where(ContentJob.idempotency_key == key))
         if existing:
@@ -55,35 +141,11 @@ def generate_content(job_id: str) -> ContentJob:
         cues = caption_cues(job.script_text)
         estimated_seconds = estimate_duration_seconds(job.script_text)
         metadata = {
-                "title": (
-                    f"{job.topic} | जो सच कोई नहीं बताता"
-                    if format_key == "reel"
-                    else f"{job.topic} की असली कहानी | आसान हिंदी में"
+                **_build_publish_metadata(
+                    topic=job.topic,
+                    format_key=format_key,
+                    niche_label=niche_label,
                 ),
-                "description": (
-                    f"{job.topic} को आसान हिंदी में समझिए।\n\n"
-                    "💬 आपकी राय क्या है? Comment में ज़रूर बताइए।\n\n"
-                    "YouTube: @LEARNWITHELITEEXPLAINER\n"
-                    "Original Hindi Reel · follow for more stories\n\n"
-                    "#Hindi #Psychology #Mindset #History #Reels"
-                    if format_key == "reel"
-                    else (
-                        "YouTube: @LEARNWITHELITEEXPLAINER\n"
-                        "Instagram: @sheoran_studios\n\n"
-                        "#Hindi #Explainer #LearnWithEliteExplainer"
-                    )
-                ),
-                "hashtags": (
-                    ["#Hindi", "#Psychology", "#Mindset", "#History", "#Reels"]
-                    if format_key == "reel"
-                    else ["#Hindi", "#Explainer", "#LearnWithEliteExplainer"]
-                ),
-                "tags": [
-                    job.topic,
-                    f"{job.topic} hindi",
-                    "hindi explainer",
-                    "learn with elite explainer",
-                ],
                 "disclosure": "AI-assisted production; facts require source verification.",
                 "format": format_info["format_code"],
                 "aspect_ratio": format_info["aspect_ratio"],
@@ -107,13 +169,19 @@ def generate_content(job_id: str) -> ContentJob:
                 "caption_cues": cues,
                 "approval_required": True,
             }
-        assets = create_job_assets(job.id, job.topic, job.script_text, Path(get_settings().media_root))
+        assets = create_job_assets(
+            job.id,
+            job.topic,
+            job.script_text,
+            Path(get_settings().media_root),
+            storyboard=storyboard,
+        )
         metadata["assets"] = assets
         job.metadata_json = json.dumps(
             metadata,
             ensure_ascii=False,
         )
-        # The RDP must render the media before the operator can approve it.
+        # A connected render worker must render the media before approval.
         job.stage = "render"
         job.status = "queued"
         job.updated_at = datetime.now(timezone.utc)
@@ -292,20 +360,8 @@ def publish_job(job_id: str) -> ContentJob:
             raise ValueError("Job not found")
         if is_paused():
             raise ValueError("Factory is paused")
-        # Enforce the configured daily publication cap (UTC day).
-        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        from sqlalchemy import func
+        from .hq import get_daily_publish_limit, is_mock_publishing
 
-        published_count = session.scalar(
-            select(func.count(PublicationRecord.id)).where(
-                PublicationRecord.status == "published",
-                PublicationRecord.created_at >= day_start,
-            )
-        ) or 0
-        from .hq import get_daily_publish_limit
-
-        if published_count >= get_daily_publish_limit():
-            raise ValueError("Daily publication limit reached")
         if job.status != "approved" or job.approval_version != job.content_version:
             raise ValueError("Job requires approval for its current content version")
         report = validate_content(
@@ -318,15 +374,65 @@ def publish_job(job_id: str) -> ContentJob:
             raise ValueError(f"Quality gate blocked publication: {', '.join(report.blockers)}")
         platforms = ["youtube", "instagram"] if job.platform == "both" else [job.platform]
         metadata = json.loads(job.metadata_json or "{}")
+        youtube_metadata = metadata.get("youtube") or {}
+        instagram_metadata = metadata.get("instagram") or {}
+        thumbnails = metadata.get("thumbnails") or {}
+        keys = [
+            f"{job.id}:{job.content_version}:{platform}"
+            for platform in platforms
+        ]
+        existing_records = {
+            record.idempotency_key: record
+            for record in session.scalars(
+                select(PublicationRecord).where(PublicationRecord.idempotency_key.in_(keys))
+            )
+        }
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        from sqlalchemy import func
+
+        published_count = session.scalar(
+            select(func.count(PublicationRecord.id)).where(
+                PublicationRecord.status == "published",
+                PublicationRecord.created_at >= day_start,
+            )
+        ) or 0
+        pending_count = sum(
+            1
+            for key in keys
+            if key not in existing_records or existing_records[key].status != "published"
+        )
+        if published_count + pending_count > get_daily_publish_limit():
+            raise ValueError("Daily publication limit does not have room for all selected platforms")
         for platform in platforms:
             key = f"{job.id}:{job.content_version}:{platform}"
-            record = session.scalar(select(PublicationRecord).where(PublicationRecord.idempotency_key == key))
+            record = existing_records.get(key)
             if record and record.status == "published":
                 continue
+            thumbnail_name = thumbnails.get(platform)
+            thumbnail_path = None
+            thumbnail_url = None
+            if not is_mock_publishing():
+                if not isinstance(thumbnail_name, str) or Path(thumbnail_name).name != thumbnail_name:
+                    raise ValueError(f"{platform.title()} thumbnail is not ready")
+                thumbnail_path = (Path(settings.media_root).resolve() / thumbnail_name).resolve()
+                if thumbnail_path.parent != Path(settings.media_root).resolve() or not thumbnail_path.is_file():
+                    raise ValueError(f"{platform.title()} thumbnail file is missing")
+                if platform == "instagram":
+                    if not settings.public_base_url:
+                        raise ValueError("PUBLIC_BASE_URL is required to publish media thumbnails")
+                    thumbnail_url = f"{settings.public_base_url.rstrip('/')}/media/{thumbnail_name}"
+            platform_metadata = youtube_metadata if platform == "youtube" else instagram_metadata
             result = get_publisher(platform).publish(
-                title=metadata["title"],
-                description=metadata["description"],
+                title=str(platform_metadata.get("title") or metadata["title"]),
+                description=str(
+                    platform_metadata.get("description")
+                    or platform_metadata.get("caption")
+                    or metadata["description"]
+                ),
                 media_path=job.render_path,
+                tags=platform_metadata.get("tags", metadata.get("tags", [])),
+                thumbnail_path=str(thumbnail_path) if thumbnail_path else None,
+                cover_url=thumbnail_url if platform == "instagram" else None,
             )
             if record is None:
                 record = PublicationRecord(job_id=job.id, platform=platform, idempotency_key=key)
@@ -334,7 +440,15 @@ def publish_job(job_id: str) -> ContentJob:
             record.status = result.status
             record.remote_id = result.remote_id
             record.remote_url = result.remote_url
-            record.error_message = result.detail if result.status != "published" else None
+            thumbnail_warning = "thumbnail setup needs attention" in result.detail.lower()
+            record.error_message = (
+                result.detail
+                if result.status != "published" or thumbnail_warning
+                else None
+            )
+            session.commit()
+            if result.status == "published" and thumbnail_warning:
+                job.error_message = result.detail
             if result.status != "published":
                 raise ValueError(result.detail)
         job.status = "published"
@@ -398,6 +512,9 @@ def claim_render_job(worker_id: str) -> ContentJob | None:
     lease_until = now.timestamp() + get_settings().worker_lease_seconds
     lease_expires = datetime.fromtimestamp(lease_until, timezone.utc)
     with SessionLocal() as session:
+        if worker_id != "railway-renderer":
+            return None
+
         # Enforce the configured concurrency cap: count live rendering leases.
         from sqlalchemy import func
 

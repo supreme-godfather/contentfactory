@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from .config import get_settings
 from .db import FactorySetting, OAuthCredential, SessionLocal
@@ -140,6 +140,50 @@ def connection_status() -> dict[str, object]:
         "authorized": credential is not None,
         "expires_at": credential.expires_at.isoformat() if credential and credential.expires_at else None,
         "scopes": credential.scope if credential else None,
+    }
+
+
+def disconnect_authorization() -> tuple[bool, bool]:
+    """Remove the saved YouTube authorization and revoke it with Google when possible."""
+    with SessionLocal() as session:
+        credential = session.get(OAuthCredential, "youtube")
+        if credential is None:
+            return False, False
+        encrypted_refresh_token = credential.refresh_token_encrypted
+        session.delete(credential)
+        session.commit()
+
+    try:
+        refresh_token = _fernet().decrypt(encrypted_refresh_token.encode()).decode()
+    except (InvalidToken, RuntimeError):
+        return True, False
+    try:
+        response = httpx.post(
+            "https://oauth2.googleapis.com/revoke",
+            data={"token": refresh_token},
+            timeout=10,
+        )
+        return True, response.is_success
+    except httpx.HTTPError:
+        return True, False
+
+
+def get_authorized_channel() -> dict[str, str]:
+    token = get_valid_access_token()
+    with httpx.Client(timeout=15) as client:
+        response = client.get(
+            "https://www.googleapis.com/youtube/v3/channels",
+            params={"part": "snippet", "mine": "true"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        response.raise_for_status()
+        channels = response.json().get("items", [])
+    if not channels:
+        raise RuntimeError("No YouTube channel is available for this Google account")
+    channel = channels[0]
+    return {
+        "id": str(channel.get("id") or ""),
+        "title": str(channel.get("snippet", {}).get("title") or "YouTube channel"),
     }
 
 

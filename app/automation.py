@@ -1,6 +1,6 @@
 """Automation engine: periodically turn top trends into generated jobs.
 
-Instagram Reel automation is supported. Safety: off by default
+Automation target is selected from Telegram Controls. Safety: off by default
 (AUTOMATION_ENABLED=false, toggleable at runtime from Telegram or the API),
 does nothing while the factory is paused, and NEVER approves or publishes —
 generated jobs still go through rendering, the quality gate and human approval.
@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from .config import get_settings
 from .db import FactorySetting, SessionLocal, TrendCandidate
+from .hq import get_publish_target
 from .services import (
     create_job,
     generate_content,
@@ -23,9 +24,6 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
-
-AUTOMATION_PLATFORM = "instagram"
-
 
 def automation_enabled() -> bool:
     """Runtime on/off state: Telegram/API toggle wins over the env default."""
@@ -47,8 +45,9 @@ def set_automation_enabled(enabled: bool) -> None:
 
 
 def run_automation_cycle() -> dict[str, object]:
+    platform = get_publish_target()
     result: dict[str, object] = {
-        "platform": AUTOMATION_PLATFORM,
+        "platform": platform,
         "skipped_reason": None,
         "trends_considered": 0,
         "jobs_created": 0,
@@ -61,13 +60,6 @@ def run_automation_cycle() -> dict[str, object]:
 
     settings = get_settings()
     result["jobs_requeued"] = requeue_failed_jobs(settings.automation_max_retries)
-
-    if settings.automation_platform != AUTOMATION_PLATFORM:
-        logger.warning(
-            "AUTOMATION_PLATFORM=%s ignored: automation is YouTube-only for now",
-            settings.automation_platform,
-        )
-    platform = AUTOMATION_PLATFORM
 
     with SessionLocal() as session:
         trends = list(
@@ -87,10 +79,11 @@ def run_automation_cycle() -> dict[str, object]:
 
     for trend_id, topic in trend_ids_topics:
         try:
-            job = create_job(topic, platform)
+            job = create_job(topic, platform, request_id=f"trend:{trend_id}")
             result["jobs_created"] = int(result["jobs_created"]) + 1
-            generate_content(job.id)
-            result["jobs_generated"] = int(result["jobs_generated"]) + 1
+            if job.status == "queued" and job.stage == "topic":
+                generate_content(job.id)
+                result["jobs_generated"] = int(result["jobs_generated"]) + 1
         except Exception:
             logger.exception("Automation: failed to generate job for trend %s; leaving it as candidate", trend_id)
             continue
@@ -112,8 +105,8 @@ async def automation_loop() -> None:
             try:
                 result = await asyncio.to_thread(run_automation_cycle)
                 logger.info("Automation cycle: %s", result)
-            except Exception:
-                logger.exception("Automation cycle failed")
+            except Exception as exc:
+                logger.error("Automation cycle failed (%s)", type(exc).__name__)
             next_automation_at = now + max(30, settings.automation_interval_seconds)
 
         try:
@@ -138,6 +131,9 @@ async def automation_loop() -> None:
                             },
                         )
                     mark_schedule_notified(job_id)
-        except Exception:
-            logger.exception("Scheduled Telegram reminders failed")
+        except Exception as exc:
+            logger.error(
+                "Scheduled Telegram reminders failed (%s)",
+                type(exc).__name__,
+            )
         await asyncio.sleep(30)

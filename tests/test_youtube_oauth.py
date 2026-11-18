@@ -45,6 +45,98 @@ def test_connection_status_initially_unauthorized():
     assert status["scopes"] is None
 
 
+def test_disconnect_removes_saved_authorization_and_revokes_google_access():
+    from app.youtube_oauth import _fernet, connection_status, disconnect_authorization
+
+    cipher = _fernet()
+    with SessionLocal() as session:
+        session.add(
+            OAuthCredential(
+                provider="youtube",
+                access_token_encrypted=cipher.encrypt(b"access-token").decode(),
+                refresh_token_encrypted=cipher.encrypt(b"refresh-token").decode(),
+                token_type="Bearer",
+                scope="youtube.upload",
+            )
+        )
+        session.commit()
+
+    response = AsyncMock()
+    response.is_success = True
+    with patch("app.youtube_oauth.httpx.post", return_value=response) as revoke:
+        assert disconnect_authorization() == (True, True)
+
+    revoke.assert_called_once_with(
+        "https://oauth2.googleapis.com/revoke",
+        data={"token": "refresh-token"},
+        timeout=10,
+    )
+    assert connection_status()["authorized"] is False
+
+
+def test_disconnect_still_removes_local_youtube_access_if_google_unreachable():
+    import httpx
+
+    from app.youtube_oauth import _fernet, connection_status, disconnect_authorization
+
+    cipher = _fernet()
+    with SessionLocal() as session:
+        session.add(
+            OAuthCredential(
+                provider="youtube",
+                access_token_encrypted=cipher.encrypt(b"access-token").decode(),
+                refresh_token_encrypted=cipher.encrypt(b"refresh-token").decode(),
+                token_type="Bearer",
+                scope="youtube.upload",
+            )
+        )
+        session.commit()
+
+    with patch(
+        "app.youtube_oauth.httpx.post",
+        side_effect=httpx.ConnectError("unavailable"),
+    ):
+        assert disconnect_authorization() == (True, False)
+    assert connection_status()["authorized"] is False
+
+
+def test_get_authorized_channel_returns_channel_name():
+    from app.youtube_oauth import get_authorized_channel
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "items": [
+                    {"id": "channel-123", "snippet": {"title": "My Hindi Channel"}}
+                ]
+            }
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, url, *, params, headers):
+            assert url.endswith("/youtube/v3/channels")
+            assert params == {"part": "snippet", "mine": "true"}
+            assert headers == {"Authorization": "Bearer access-token"}
+            return FakeResponse()
+
+    with (
+        patch("app.youtube_oauth.get_valid_access_token", return_value="access-token"),
+        patch("app.youtube_oauth.httpx.Client", return_value=FakeClient()),
+    ):
+        assert get_authorized_channel() == {
+            "id": "channel-123",
+            "title": "My Hindi Channel",
+        }
+
+
 def test_create_authorization_url_requires_client_id(monkeypatch):
     monkeypatch.setenv("YOUTUBE_CLIENT_ID", "")
     get_settings.cache_clear()

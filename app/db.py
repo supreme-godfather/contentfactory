@@ -4,7 +4,8 @@ import logging
 import time
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -153,14 +154,23 @@ if database_url.startswith("postgresql://"):
     database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 elif database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-if database_url.startswith("sqlite:///"):
-    Path("data").mkdir(exist_ok=True)
-connect_args = (
-    {"check_same_thread": False}
-    if database_url.startswith("sqlite")
-    else {"connect_timeout": 10}
-)
+is_sqlite = database_url.startswith("sqlite")
+if is_sqlite:
+    sqlite_path = make_url(database_url).database
+    if sqlite_path and sqlite_path != ":memory:":
+        Path(sqlite_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    connect_args = {"check_same_thread": False, "timeout": 30}
+else:
+    connect_args = {"connect_timeout": 10}
 engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
+if is_sqlite:
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite_connection(connection, _record) -> None:
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
