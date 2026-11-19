@@ -193,7 +193,7 @@ def generate_minimax_video(prompt: str, destination: Path) -> None:
             "content": [{"type": "text", "text": prompt[:2000]}],
             "duration": max(5, min(10, settings.minimax_duration_seconds)),
             "ratio": "9:16",
-            "resolution": "1080P",
+            "resolution": "768P",
         },
         timeout=180,
     )
