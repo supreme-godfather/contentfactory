@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     minimax_base_url: str = "https://api.minimax.io/v2"
     minimax_model: str = "MiniMax-H3"
     minimax_duration_seconds: int = 5
+    higgsfield_base_url: str = "https://api.higgsfield.ai"
     media_provider: str = "google"
     instagram_enabled: bool = False
     instagram_user_id: str = ""

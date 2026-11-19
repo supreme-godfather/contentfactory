@@ -21,6 +21,7 @@ from cryptography.fernet import Fernet
 import httpx
 
 from .config import get_settings
+from .encryption import get_fernet
 from .db import FactorySetting, ProviderCredential, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -62,8 +63,8 @@ PROVIDER_INFO: dict[str, dict[str, object]] = {
     },
     "higgsfield": {
         "label": "🎬 Higgsfield",
-        "secret_label": "Higgsfield API key",
-        "wired": False,
+        "secret_label": "Higgsfield API key (Key ID:Key Secret)",
+        "wired": True,
     },
     "kling": {
         "label": "🎥 Kling AI",
@@ -111,16 +112,14 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
     },
     "video": {
         "minimax": "MiniMax H3 text-to-video",
+        "higgsfield": "Higgsfield Wan 2.6 text-to-video",
         "off": "No AI video",
     },
 }
 
 
 def _cipher() -> Fernet:
-    key = get_settings().token_encryption_key
-    if not key:
-        raise RuntimeError("TOKEN_ENCRYPTION_KEY is not configured")
-    return Fernet(key.encode("ascii"))
+    return get_fernet()
 
 
 def set_provider_secret(provider: str, secret: str) -> None:
@@ -162,7 +161,7 @@ def provider_status() -> dict[str, object]:
     for name, is_configured in configured.items():
         status[name] = is_configured
         cooldown = provider_cooldown_until(name) if name in {
-            "google", "openai", "gemini", "huggingface", "elevenlabs", "minimax"
+            "google", "openai", "gemini", "huggingface", "elevenlabs", "minimax", "higgsfield"
         } else None
         status[f"{name}_cooldown_until"] = cooldown.isoformat() if cooldown else None
     # Google can also be configured purely through environment variables.
@@ -170,6 +169,7 @@ def provider_status() -> dict[str, object]:
     status["elevenlabs_voice_id"] = bool(get_elevenlabs_voice_id())
     status["huggingface_image_endpoint"] = bool(get_huggingface_image_endpoint())
     status["minimax"] = bool(configured["minimax"] or settings.minimax_api_key)
+    status["higgsfield"] = bool(configured["higgsfield"])
     return status
 
 
@@ -198,7 +198,7 @@ def get_provider_for_role(role: str) -> str:
     if role == "script":
         return selected if selected in {"openai", "gemini", "huggingface"} else "template"
     if role == "video":
-        return selected if selected == "minimax" else "off"
+        return selected if selected in {"minimax", "higgsfield"} else "off"
     if selected in {"google", "openai"}:
         return selected
     return "off"
@@ -231,7 +231,7 @@ def is_provider_quota_error(error: Exception) -> bool:
 
 
 def mark_provider_quota_error(provider: str, error: Exception) -> datetime:
-    if provider not in {"google", "openai", "gemini", "huggingface", "elevenlabs", "minimax"}:
+    if provider not in {"google", "openai", "gemini", "huggingface", "elevenlabs", "minimax", "higgsfield"}:
         raise ValueError("Unsupported wired provider")
     retry_after = PROVIDER_COOLDOWN_DEFAULT_SECONDS
     if isinstance(error, httpx.HTTPStatusError):
@@ -319,6 +319,13 @@ def provider_candidates_for_role(role: str) -> list[str]:
     if primary == "minimax":
         status = provider_status()
         if not status.get("minimax"):
+            return []
+        if provider_cooldown_until(primary) is not None:
+            return []
+        return [primary]
+    if primary == "higgsfield":
+        status = provider_status()
+        if not status.get("higgsfield"):
             return []
         if provider_cooldown_until(primary) is not None:
             return []

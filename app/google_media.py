@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 
 import httpx
 from google.auth.transport.requests import Request
@@ -226,6 +227,66 @@ def generate_minimax_video(prompt: str, destination: Path) -> None:
     raise RuntimeError("MiniMax video task timed out while waiting for completion.")
 
 
+def generate_higgsfield_video(prompt: str, destination: Path) -> None:
+    settings = get_settings()
+    credentials = get_provider_secret("higgsfield")
+    if not credentials:
+        raise RuntimeError("Higgsfield video generation requires an API key.")
+    if credentials.count(":") != 1:
+        raise RuntimeError("Higgsfield API key must use the Key ID:Key Secret format.")
+    key_id, key_secret = credentials.split(":", 1)
+    if not key_id.strip() or not key_secret.strip():
+        raise RuntimeError("Higgsfield API key must include both a key ID and key secret.")
+
+    base_url = settings.higgsfield_base_url.rstrip("/")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._/-]*)?", base_url):
+        raise RuntimeError("HIGGSFIELD_BASE_URL must be an HTTPS API base URL.")
+
+    headers = {
+        "Authorization": f"Key {key_id.strip()}:{key_secret.strip()}",
+        "Content-Type": "application/json",
+        "Idempotency-Key": str(uuid.uuid4()),
+    }
+    submitted = httpx.post(
+        f"{base_url}/wan/v2.6/text-to-video",
+        headers=headers,
+        json={
+            "prompt": prompt[:2000],
+            "duration": 5,
+            "resolution": "720p",
+            "prompt_extend": True,
+        },
+        timeout=180,
+    )
+    submitted.raise_for_status()
+    submission = submitted.json()
+    status_url = submission.get("status_url")
+    if not status_url:
+        raise RuntimeError("Higgsfield did not return a status_url.")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._/-]*)?", status_url):
+        raise RuntimeError("Higgsfield returned an invalid status_url.")
+
+    for attempt in range(60):
+        polled = httpx.get(status_url, headers={"Authorization": headers["Authorization"]}, timeout=180)
+        polled.raise_for_status()
+        result = polled.json()
+        status = str(result.get("status") or "").lower()
+        if status == "completed":
+            video_url = (result.get("video") or {}).get("url")
+            if not video_url:
+                raise RuntimeError("Higgsfield returned success without a video URL.")
+            downloaded = httpx.get(video_url, timeout=180)
+            downloaded.raise_for_status()
+            if not downloaded.content:
+                raise RuntimeError("Higgsfield returned an empty video.")
+            destination.write_bytes(downloaded.content)
+            return
+        if status in {"failed", "nsfw", "canceled"}:
+            raise RuntimeError(f"Higgsfield video task ended with status: {status}")
+        time.sleep(10 if attempt < 30 else 15)
+    raise RuntimeError("Higgsfield video task timed out while waiting for completion.")
+
+
 def create_job_assets(
     job_id: str,
     topic: str,
@@ -299,6 +360,25 @@ def create_job_assets(
                 video = media_root / f"{job_id}-scene-video-{index}.mp4"
                 generated_videos.append(video)
                 generate_minimax_video(prompt, video)
+                assets[f"scene_video_{index}"] = video.name
+        except Exception:
+            for video in generated_videos:
+                video.unlink(missing_ok=True)
+            raise
+    elif get_provider_for_role("video") == "higgsfield":
+        if no_paid_providers_enabled():
+            raise RuntimeError(
+                "Higgsfield video generation is blocked while no-paid mode is ON."
+            )
+        if not provider_status().get("higgsfield"):
+            raise RuntimeError("Higgsfield video generation requires a configured API key.")
+        scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
+        generated_videos = []
+        try:
+            for index, prompt in enumerate(scene_prompts, start=1):
+                video = media_root / f"{job_id}-scene-video-{index}.mp4"
+                generated_videos.append(video)
+                generate_higgsfield_video(prompt, video)
                 assets[f"scene_video_{index}"] = video.name
         except Exception:
             for video in generated_videos:

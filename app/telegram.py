@@ -3097,6 +3097,9 @@ async def handle_update(update: dict[str, Any]) -> None:
                     else "Set the voice ID under Controls → Providers → Voice. "
                     "ElevenLabs usage consumes plan credits and is blocked by no-paid mode."
                     if provider == "elevenlabs"
+                    else "Higgsfield uses a Key ID:Key Secret credential for Wan 2.6 "
+                    "video generation. Paid generation remains blocked until no-paid mode is disabled."
+                    if provider == "higgsfield"
                     else "Media generation will use this provider when AI media is enabled."
                     if PROVIDER_INFO.get(provider, {}).get("wired")
                     else "Its key is stored safely. The generation endpoint for this provider "
