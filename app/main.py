@@ -123,6 +123,12 @@ def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
     settings = get_settings()
     from .hq import get_publish_target, is_mock_publishing
     from .platform_credentials import platform_enabled
+    from .provider_credentials import (
+        get_provider_for_role,
+        media_generation_enabled,
+        no_paid_providers_enabled,
+        provider_status,
+    )
 
     return {
         "paused": is_paused(),
@@ -133,7 +139,59 @@ def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
         "automation_enabled": automation_enabled(),
         "platform": get_publish_target(),
         "youtube_oauth": connection_status(),
+        "media_generation_enabled": media_generation_enabled(),
+        "no_paid_providers": no_paid_providers_enabled(),
+        "video_provider": get_provider_for_role("video"),
+        "provider_status": provider_status(),
     }
+
+
+class PaidProviderToggleRequest(BaseModel):
+    no_paid: bool
+
+
+@app.post("/api/providers/paid-mode")
+def paid_provider_mode(
+    request: PaidProviderToggleRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, bool]:
+    from .provider_credentials import set_no_paid_providers_enabled
+
+    set_no_paid_providers_enabled(request.no_paid)
+    return {"no_paid": request.no_paid}
+
+
+class ProviderRoleRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=40)
+
+
+@app.post("/api/providers/video/select")
+def select_video_provider(
+    request: ProviderRoleRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, str]:
+    from .provider_credentials import set_provider_for_role
+
+    try:
+        set_provider_for_role("video", request.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"video_provider": request.provider}
+
+
+class MediaGenerationToggleRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/media-generation/toggle")
+def media_generation_toggle(
+    request: MediaGenerationToggleRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, bool]:
+    from .provider_credentials import set_media_generation_enabled
+
+    set_media_generation_enabled(request.enabled)
+    return {"enabled": request.enabled}
 
 
 @app.get("/api/backup/export")
