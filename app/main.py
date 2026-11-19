@@ -194,6 +194,21 @@ def media_generation_toggle(
     return {"enabled": request.enabled}
 
 
+class PauseToggleRequest(BaseModel):
+    paused: bool
+
+
+@app.post("/api/pause/toggle")
+def pause_toggle(
+    request: PauseToggleRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, bool]:
+    from .services import set_paused
+
+    set_paused(request.paused)
+    return {"paused": request.paused}
+
+
 @app.get("/api/backup/export")
 def backup_export(_: None = Depends(require_admin_api_token)) -> FileResponse:
     """Create an authenticated portable database-and-media archive."""
