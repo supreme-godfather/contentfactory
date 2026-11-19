@@ -77,6 +77,7 @@ _pending_huggingface_image_endpoint: set[int] = set()
 _pending_platform_setup: dict[int, str] = {}
 _pending_account_name: dict[int, str] = {}
 _pending_custom_creator: set[int] = set()
+_pending_custom_part_count: dict[int, int] = {}
 _pending_instagram_id: set[int] = set()
 _pending_schedule: dict[int, str] = {}
 _unauthorized_notice_times: OrderedDict[int, float] = OrderedDict()
@@ -138,7 +139,7 @@ def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
     toggle = _button("▶️ Resume", "resume") if paused else _button("⏸️ Pause", "pause")
     return {
         "inline_keyboard": [
-            [_button("✨ Create", "create"), _button("🧠 Custom 6-Part", "custom_creator")],
+            [_button("✨ Create", "create"), _button("🧠 Custom Series", "custom_creator")],
             [_button("📥 Queue", "queue"), _button("📊 Status", "status")],
             [_button("🔥 Trends", "trends"), _button("📈 Analytics", "analytics")],
             [_button("⚙️ Controls", "controls"), _button("🤖 Automation", "automation_panel"), toggle],
@@ -1735,19 +1736,31 @@ def _build_custom_creator_message() -> str:
     return (
         "🧠 <b>Custom Creator</b>\n"
         f"{_divider()}\n\n"
-        "Send one natural-language brief. It can describe:\n"
-        "  • a six-part story\n"
+        "First choose the number of parts, then send one natural-language brief.\n"
+        "The built-in planning AI will propose:\n"
+        "  • connected story arc and exact part count\n"
         "  • tone and target audience\n"
         "  • script length and cliffhanger style\n"
         "  • scene, camera and caption direction\n"
         "  • title, thumbnail and hashtag preferences\n\n"
         "<b>Example:</b>\n"
-        "<i>Create six cyber-safety Shorts. Serious tone, 45 seconds each, "
+        "<i>Create 7 cyber-safety Shorts. Serious tone, 45 seconds each, "
         "cinematic scenes, simple Hindi, and a cliffhanger at every part.</i>\n\n"
         "Nothing is published automatically. The bot creates separate preview "
         "jobs and waits for per-job approval."
         f"\n{_divider()}"
     )
+
+
+def _custom_part_count_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    counts = [2, 3, 4, 5, 6, 7, 8, 10, 12]
+    rows = [
+        [_button(f"{count} Parts", f"custom_parts:{count}") for count in counts[:3]],
+        [_button(f"{count} Parts", f"custom_parts:{count}") for count in counts[3:6]],
+        [_button(f"{count} Parts", f"custom_parts:{count}") for count in counts[6:]],
+        [_button("❌ Cancel", "custom_cancel"), _button("🔙 Back", "menu")],
+    ]
+    return {"inline_keyboard": rows}
 
 
 # ── Main update handler ────────────────────────────────────────────────
@@ -1806,15 +1819,34 @@ async def handle_update(update: dict[str, Any]) -> None:
                 await send_message(chat_id, _build_create_message(), _keyboard())
 
             elif data == "custom_creator":
-                _pending_custom_creator.add(chat_id)
                 await send_message(
                     chat_id,
                     _build_custom_creator_message(),
-                    {"inline_keyboard": [[_button("❌ Cancel", "custom_cancel")], [_button("🔙 Back", "menu")]]},
+                    _custom_part_count_keyboard(),
+                )
+
+            elif data.startswith("custom_parts:"):
+                try:
+                    count = int(data.split(":", 1)[1])
+                except (TypeError, ValueError):
+                    count = 6
+                count = max(2, min(count, 12))
+                _pending_custom_creator.add(chat_id)
+                _pending_custom_part_count[chat_id] = count
+                await send_message(
+                    chat_id,
+                    "🧠 <b>Custom Series setup</b>\n"
+                    f"{_divider()}\n\n"
+                    f"  Parts selected: <b>{count}</b>\n"
+                    "  Planning mode: <b>Premium built-in AI assistant</b>\n"
+                    "  Output: scripts, scenes, titles, thumbnails, captions and hashtags\n\n"
+                    "Now send the story idea, niche, tone, audience and any special hook you want.",
+                    {"inline_keyboard": [[_button("❌ Cancel", "custom_cancel")], [_button("🔙 Change parts", "custom_creator")]]},
                 )
 
             elif data == "custom_cancel":
                 _pending_custom_creator.discard(chat_id)
+                _pending_custom_part_count.pop(chat_id, None)
                 await send_message(chat_id, "↩️ Custom Creator cancelled.", _keyboard())
 
             elif data == "controls":
@@ -2762,22 +2794,32 @@ async def handle_update(update: dict[str, Any]) -> None:
         if chat_id in _pending_custom_creator:
             if text == "/cancel":
                 _pending_custom_creator.discard(chat_id)
+                _pending_custom_part_count.pop(chat_id, None)
                 await send_message(chat_id, "↩️ Custom Creator cancelled.", _keyboard())
                 return
             _pending_custom_creator.discard(chat_id)
+            count = _pending_custom_part_count.pop(chat_id, None)
             brief = " ".join(text.split()).strip()
             if len(brief) > 240:
                 await send_message(chat_id, "⚠️ Keep the custom brief under 240 characters.", _keyboard())
                 return
+            if count is None:
+                count_match = re.search(
+                    r"\b([2-9]|1[0-2])\s*(?:-?\s*(?:part|parts|हिस्से|पार्ट|parts))",
+                    brief,
+                    flags=re.IGNORECASE,
+                )
+                count = int(count_match.group(1)) if count_match else 6
+            count = max(2, min(count, 12))
             progress_message_id = await send_progress_message(
                 chat_id,
-                "🧠 <b>Custom Creator is planning the series…</b>\n"
+                f"🧠 <b>Custom Creator is planning {count} parts…</b>\n"
                 "<code>[████░░░░]  Story brief</code>\n"
                 "<code>[░░░░░░░░]  Scripts and scene prompts</code>\n"
                 "<code>[░░░░░░░░]  Titles, thumbnails and metadata</code>",
             )
             try:
-                jobs = create_custom_jobs(brief, get_publish_target(), parts=6)
+                jobs = create_custom_jobs(brief, get_publish_target(), parts=count)
                 cards = "\n".join(
                     f"  {_STATUS_EMOJI.get(job.status, '⚪')} <code>{job.id[:8]}</code> {html.escape(job.topic)}"
                     for job in jobs
@@ -2785,7 +2827,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                 await finish_progress_message(
                     chat_id,
                     progress_message_id,
-                    "✅ <b>Six-part custom series planned</b>\n"
+                    f"✅ <b>{count}-part custom series planned</b>\n"
                     f"{_divider()}\n\n"
                     f"{cards}\n\n"
                     "📝 Scripts, scene direction, titles, thumbnail prompts and hashtags "

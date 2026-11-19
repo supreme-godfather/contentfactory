@@ -124,19 +124,68 @@ def create_job(
         return job
 
 
+def plan_custom_series(brief: str, count: int) -> dict[str, object]:
+    """Small deterministic planning assistant for custom series briefs.
+
+    It extracts the practical production directions without making a paid
+    model call, so the workflow stays usable and approval-gated.
+    """
+    text = " ".join(brief.split()).strip()
+    lowered = text.casefold()
+    count = max(2, min(count, 12))
+
+    if any(word in lowered for word in ("हास्य", "funny", "comedy", "मज़ेदार", "मजेदार")):
+        tone = "energetic, witty and family-safe"
+    elif any(word in lowered for word in ("भयानक", "डरावना", "horror", "scary")):
+        tone = "dark, suspenseful and cinematic"
+    elif any(word in lowered for word in ("serious", "गंभीर", "news", "सत्य", "investigation")):
+        tone = "serious, factual and cinematic"
+    else:
+        tone = "curious, emotional and motivational"
+
+    if any(word in lowered for word in ("kids", "child", "बच्च", "easy", "simple", "आसान")):
+        audience = "families and beginners"
+    elif any(word in lowered for word in ("teen", "students", "student", "युवा", "college")):
+        audience = "young viewers and students"
+    else:
+        audience = "general Hindi-speaking viewers"
+
+    if any(word in lowered for word in ("cinematic", "film", "movie", "सिनेम", "डॉक्यूमेंट्री")):
+        visual_style = "premium cinematic documentary"
+    elif any(word in lowered for word in ("animation", "cartoon", "illustrated", "एनिम")):
+        visual_style = "bold illustrated 9:16 animation"
+    else:
+        visual_style = "premium dark-cinematic faceless Reel"
+
+    return {
+        "mode": "deterministic_assistant",
+        "tone": tone,
+        "audience": audience,
+        "visual_style": visual_style,
+        "part_count": count,
+        "hook_style": "surprising question in the first 3 seconds",
+        "continuation_style": "strong unresolved clue or consequence at every ending",
+        "retention_style": "one core reveal per part; escalating story tension",
+        "caption_style": "bold 2-line Hindi captions with 2-4 second visual beats",
+        "thumbnail_style": "high-contrast 9:16, one face or symbolic object, 2-4 Hindi words",
+        "fact_policy": "use verifiable claims only; flag uncertain facts for owner review",
+    }
+
+
 def create_custom_jobs(
     brief: str,
     platform: str,
     *,
     parts: int = 6,
 ) -> list[ContentJob]:
-    """Create an approved owner-briefed six-part series without publishing."""
+    """Create an approval-gated owner-briefed series with 2-12 variable parts."""
     if platform not in {"youtube", "instagram", "both"}:
         raise ValueError("Platform must be youtube, instagram, or both")
     clean_brief = " ".join(brief.split()).strip()
     if not clean_brief or len(clean_brief) > 240:
         raise ValueError("Custom brief must contain 1-240 non-whitespace characters")
-    count = max(1, min(parts, 6))
+    count = max(2, min(parts, 12))
+    ai_plan = plan_custom_series(clean_brief, count)
     jobs: list[ContentJob] = []
     for part in range(1, count + 1):
         topic = f"{clean_brief} — Part {part}/{count}"
@@ -148,13 +197,23 @@ def create_custom_jobs(
         if job.status == "queued" and job.stage == "topic":
             with SessionLocal() as session:
                 stored = session.get(ContentJob, job.id)
+                if part == count:
+                    arc_stage = "final payoff and satisfying conclusion"
+                elif part == 1:
+                    arc_stage = "setup, mystery and first reveal"
+                else:
+                    progress = round((part - 1) / max(count - 1, 1), 2)
+                    arc_stage = "build tension and reveal clue" if progress < 0.75 else "late escalation and reversal"
                 stored.script_text = build_script(
                     topic,
                     format="reel",
                     custom_instruction=(
-                        "Create this as one connected 45-second Short in a six-part story. "
+                        f"Create this as one connected 45-second Short in a {count}-part story. "
                         f"This is Part {part}/{count}. End with a strong continuation hook "
-                        "and do not repeat the same opening, facts or CTA as other parts."
+                        "and do not repeat the same opening, facts or CTA as other parts. "
+                        f"Tone: {ai_plan['tone']}. Audience: {ai_plan['audience']}. "
+                        f"Visual style: {ai_plan['visual_style']}. Story stage: {arc_stage}. "
+                        "The final part must resolve the core story while preserving the discussion CTA."
                         f" Owner brief: {clean_brief}"
                     ),
                 )
@@ -171,14 +230,18 @@ def create_custom_jobs(
                     "series_brief": clean_brief,
                     "series_part": part,
                     "series_count": count,
+                    "ai_plan": ai_plan,
+                    "arc_stage": arc_stage,
                     "title_options": [
                         f"भाग {part}: {clean_brief}"[:100],
                         f"{clean_brief} — पार्ट {part}"[:100],
-                        f"रहस्य का {part}वा हिस्सा"[:100],
+                        f"{count} भागों की कहानी — {part}वा भाग"[:100],
                     ],
                     "thumbnail_prompt": (
-                        "premium Hindi 9:16 vertical thumbnail, cinematic bold face or close-up, "
-                        "high contrast red-orange accent, 2-word Hindi title, no copied creator style"
+                        f"premium Hindi 9:16 vertical thumbnail for Part {part}/{count}, "
+                        f"{ai_plan['visual_style']}, {arc_stage}, "
+                        "high contrast red-orange accent, 2-4 word Hindi title, "
+                        "cinematic close-up or symbolic object, no real-person likeness, no copied creator style"
                     ),
                     "disclosure": "AI-assisted production; facts require source verification.",
                     "format": "9:16 vertical Short",
@@ -195,6 +258,7 @@ def create_custom_jobs(
                     stored.script_text,
                     Path(get_settings().media_root),
                     storyboard=storyboard,
+                    thumbnail_prompt=str(metadata["thumbnail_prompt"]),
                 )
                 metadata["assets"] = assets
                 stored.metadata_json = json.dumps(metadata, ensure_ascii=False)

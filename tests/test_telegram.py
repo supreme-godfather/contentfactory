@@ -27,6 +27,7 @@ def isolated_database(monkeypatch):
         _pending_instagram_id,
         _pending_account_name,
         _pending_custom_creator,
+        _pending_custom_part_count,
         _unauthorized_notice_times,
     )
 
@@ -35,6 +36,7 @@ def isolated_database(monkeypatch):
     _pending_instagram_id.clear()
     _pending_account_name.clear()
     _pending_custom_creator.clear()
+    _pending_custom_part_count.clear()
     _pending_elevenlabs_voice_id.clear()
     _pending_huggingface_image_endpoint.clear()
     import app.db
@@ -329,6 +331,19 @@ class TestKeyboards:
         kb = _keyboard()
         rows = kb["inline_keyboard"]
         assert len(rows) == 4
+
+    def test_custom_part_count_keyboard_includes_4_and_7(self):
+        from app.telegram import _custom_part_count_keyboard
+
+        keyboard = _custom_part_count_keyboard()
+        buttons = [
+            button
+            for row in keyboard["inline_keyboard"]
+            for button in row
+        ]
+        callback_data = {button["callback_data"] for button in buttons if "callback_data" in button}
+        assert "custom_parts:4" in callback_data
+        assert "custom_parts:7" in callback_data
 
     def test_main_keyboard_shows_resume_when_paused(self):
         """When factory is paused, the toggle button should say Resume."""
@@ -1408,6 +1423,19 @@ class TestMessageBuilders:
 
 # ── Update handler tests ───────────────────────────────────────────────
 class TestHandleUpdate:
+    @pytest.mark.asyncio
+    async def test_custom_creator_part_selection_sets_pending_count(self):
+        from app.telegram import handle_update, _pending_custom_part_count
+
+        with (
+            patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send,
+            patch("app.telegram.answer_callback", new_callable=AsyncMock),
+        ):
+            await handle_update(_callback_update("custom_parts:7"))
+
+        assert _pending_custom_part_count[CHAT_ID] == 7
+        assert "7" in mock_send.call_args.args[1]
+
     @pytest.mark.asyncio
     async def test_callback_acknowledges_with_working_indicator(self):
         from app.telegram import handle_update

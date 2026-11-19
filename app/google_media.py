@@ -232,6 +232,7 @@ def create_job_assets(
     script: str,
     media_root: Path,
     storyboard: list[dict[str, object]] | None = None,
+    thumbnail_prompt: str | None = None,
 ) -> dict[str, str]:
     from .provider_credentials import (
         get_provider_for_role,
@@ -310,6 +311,17 @@ def create_job_assets(
     voiceover = media_root / f"{job_id}-voiceover.mp3"
     if _generate_role_asset("voice", job_id, topic, script, voiceover):
         assets["voiceover"] = voiceover.name
+    if thumbnail_prompt:
+        thumbnail = media_root / f"{job_id}-thumbnail.png"
+        if _generate_role_asset(
+            "image",
+            job_id,
+            topic,
+            script,
+            thumbnail,
+            prompt_override=thumbnail_prompt,
+        ):
+            assets["thumbnail"] = thumbnail.name
     return assets
 
 
@@ -352,6 +364,7 @@ def _generate_role_asset(
     topic: str,
     script: str,
     destination: Path,
+    prompt_override: str | None = None,
 ) -> bool:
     from .provider_credentials import (
         is_provider_quota_error,
@@ -364,7 +377,7 @@ def _generate_role_asset(
         try:
             if provider == "google":
                 if role == "image":
-                    generate_image(_image_prompt(topic), destination)
+                    generate_image(prompt_override or _image_prompt(topic), destination)
                 else:
                     generate_voiceover(script, destination)
             elif provider == "openai":

@@ -55,9 +55,22 @@ def test_auto_render_target_is_persisted_as_railway_only():
     from app.hq import get_render_worker_target, set_render_worker_target
 
     assert get_render_worker_target() == "railway-renderer"
-
     set_render_worker_target("auto")
     assert get_render_worker_target() == "railway-renderer"
+
+
+def test_custom_series_planner_supports_variable_part_counts():
+    from app.services import plan_custom_series
+
+    plan = plan_custom_series("4 भाग की गंभीर साइबर सुरक्षा कहानी", 4)
+    assert plan["part_count"] == 4
+    assert "serious" in str(plan["tone"]).lower()
+    assert "premium" in str(plan["visual_style"]).lower()
+
+    plan = plan_custom_series("मज़ेदार बच्चों की science कहानी", 7)
+    assert plan["part_count"] == 7
+    assert "witty" in str(plan["tone"]).lower()
+    assert "families" in str(plan["audience"]).lower()
 
 
 def test_gemini_script_route_works_in_no_paid_mode(monkeypatch):
