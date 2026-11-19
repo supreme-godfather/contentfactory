@@ -196,6 +196,11 @@ def generate_minimax_video(prompt: str, destination: Path) -> None:
         },
         timeout=180,
     )
+    if submitted.status_code >= 400:
+        detail = submitted.text[:1500].replace(api_key, "[REDACTED]")
+        raise RuntimeError(
+            f"MiniMax video_generation returned HTTP {submitted.status_code}: {detail}"
+        )
     submitted.raise_for_status()
     task_id = submitted.json().get("task_id")
     if not task_id:
