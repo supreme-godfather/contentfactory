@@ -146,6 +146,7 @@ def build_script(
     brand: str = "learn_with_elite_explainer",
     format: str | None = None,
     niche: str | None = None,
+    custom_instruction: str | None = None,
 ) -> str:
     fmt, niche_label = _resolve_format_and_niche(format, niche)
     is_long = fmt == "long"
@@ -215,6 +216,12 @@ def build_script(
         "spell numbers out as words (the script is read aloud by text-to-speech); "
         f"end with exactly these closing lines: '{CLOSING_LINES}'"
     )
+    if custom_instruction:
+        prompt += (
+            "\n\nOwner-specific custom direction:\n"
+            f"{' '.join(custom_instruction.split())[:1200]}\n"
+            "Respect this direction while keeping the script original, factual and safe."
+        )
     try:
         from .provider_credentials import get_provider_secret
 

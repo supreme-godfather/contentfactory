@@ -124,6 +124,90 @@ def create_job(
         return job
 
 
+def create_custom_jobs(
+    brief: str,
+    platform: str,
+    *,
+    parts: int = 6,
+) -> list[ContentJob]:
+    """Create an approved owner-briefed six-part series without publishing."""
+    if platform not in {"youtube", "instagram", "both"}:
+        raise ValueError("Platform must be youtube, instagram, or both")
+    clean_brief = " ".join(brief.split()).strip()
+    if not clean_brief or len(clean_brief) > 240:
+        raise ValueError("Custom brief must contain 1-240 non-whitespace characters")
+    count = max(1, min(parts, 6))
+    jobs: list[ContentJob] = []
+    for part in range(1, count + 1):
+        topic = f"{clean_brief} — Part {part}/{count}"
+        job = create_job(
+            topic,
+            platform,
+            request_id=f"custom:telegram:{part}:{sha256(clean_brief.casefold().encode()).hexdigest()[:16]}",
+        )
+        if job.status == "queued" and job.stage == "topic":
+            with SessionLocal() as session:
+                stored = session.get(ContentJob, job.id)
+                stored.script_text = build_script(
+                    topic,
+                    format="reel",
+                    custom_instruction=(
+                        "Create this as one connected 45-second Short in a six-part story. "
+                        f"This is Part {part}/{count}. End with a strong continuation hook "
+                        "and do not repeat the same opening, facts or CTA as other parts."
+                        f" Owner brief: {clean_brief}"
+                    ),
+                )
+                storyboard = build_storyboard(topic, stored.script_text)
+                cues = caption_cues(stored.script_text)
+                estimated_seconds = estimate_duration_seconds(stored.script_text)
+                metadata = {
+                    **_build_publish_metadata(
+                        topic=topic,
+                        format_key="reel",
+                        niche_label=get_settings().reel_profile_name,
+                    ),
+                    "custom_creator": True,
+                    "series_brief": clean_brief,
+                    "series_part": part,
+                    "series_count": count,
+                    "title_options": [
+                        f"भाग {part}: {clean_brief}"[:100],
+                        f"{clean_brief} — पार्ट {part}"[:100],
+                        f"रहस्य का {part}वा हिस्सा"[:100],
+                    ],
+                    "thumbnail_prompt": (
+                        "premium Hindi 9:16 vertical thumbnail, cinematic bold face or close-up, "
+                        "high contrast red-orange accent, 2-word Hindi title, no copied creator style"
+                    ),
+                    "disclosure": "AI-assisted production; facts require source verification.",
+                    "format": "9:16 vertical Short",
+                    "aspect_ratio": "9:16",
+                    "storyboard": storyboard,
+                    "caption_cues": cues,
+                    "duration_seconds": estimated_seconds,
+                    "approval_required": True,
+                }
+                stored.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                assets = create_job_assets(
+                    stored.id,
+                    topic,
+                    stored.script_text,
+                    Path(get_settings().media_root),
+                    storyboard=storyboard,
+                )
+                metadata["assets"] = assets
+                stored.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                stored.stage = "render"
+                stored.status = "queued"
+                stored.updated_at = datetime.now(timezone.utc)
+                session.commit()
+                session.refresh(stored)
+                job = stored
+        jobs.append(job)
+    return jobs
+
+
 def generate_content(job_id: str) -> ContentJob:
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)

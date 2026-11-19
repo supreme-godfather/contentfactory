@@ -20,6 +20,7 @@ from .services import (
     approve_job,
     cancel_job,
     create_job,
+    create_custom_jobs,
     generate_content,
     is_paused,
     list_jobs,
@@ -74,6 +75,8 @@ _pending_provider_setup: dict[int, str] = {}
 _pending_elevenlabs_voice_id: set[int] = set()
 _pending_huggingface_image_endpoint: set[int] = set()
 _pending_platform_setup: dict[int, str] = {}
+_pending_account_name: dict[int, str] = {}
+_pending_custom_creator: set[int] = set()
 _pending_instagram_id: set[int] = set()
 _pending_schedule: dict[int, str] = {}
 _unauthorized_notice_times: OrderedDict[int, float] = OrderedDict()
@@ -135,10 +138,10 @@ def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
     toggle = _button("▶️ Resume", "resume") if paused else _button("⏸️ Pause", "pause")
     return {
         "inline_keyboard": [
-            [_button("✨ Create", "create"), _button("📥 Queue", "queue")],
-            [_button("📊 Status", "status"), _button("🔥 Trends", "trends")],
-            [_button("📈 Analytics", "analytics"), _button("⚙️ Controls", "controls")],
-            [_button("🤖 Automation", "automation_panel"), toggle],
+            [_button("✨ Create", "create"), _button("🧠 Custom 6-Part", "custom_creator")],
+            [_button("📥 Queue", "queue"), _button("📊 Status", "status")],
+            [_button("🔥 Trends", "trends"), _button("📈 Analytics", "analytics")],
+            [_button("⚙️ Controls", "controls"), _button("🤖 Automation", "automation_panel"), toggle],
         ]
     }
 
@@ -1597,6 +1600,7 @@ def _account_manager_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     youtube_enabled = platform_enabled("youtube", settings.youtube_enabled)
     rows = [
         [_button("▶️ YouTube setup steps", "youtube_setup")],
+        [_button("➕ Add YouTube account slot", "account_add:youtube"), _button("➕ Add Instagram account slot", "account_add:instagram")],
     ]
     if youtube["authorized"]:
         rows.append([_button("🔄 Reconnect YouTube", "youtube_reconnect")])
@@ -1633,6 +1637,7 @@ def _account_manager_keyboard() -> dict[str, list[list[dict[str, str]]]]:
 
 def _build_account_manager_message() -> str:
     from .platform_credentials import get_platform_secret, get_platform_value, platform_enabled
+    from .platform_accounts import list_accounts
 
     settings = get_settings()
     youtube = connection_status()
@@ -1666,14 +1671,32 @@ def _build_account_manager_message() -> str:
     masked_instagram_id = (
         f"••••{html.escape(instagram_id[-4:])}" if instagram_id else "not added"
     )
+    youtube_slots = list_accounts("youtube")
+    instagram_slots = list_accounts("instagram")
+    youtube_slot_text = (
+        "\n".join(
+            f"   {'🟢' if account['enabled'] else '⚪'} {html.escape(str(account['name']))}"
+            for account in youtube_slots
+        )
+        or "   No named slots yet"
+    )
+    instagram_slot_text = (
+        "\n".join(
+            f"   {'🟢' if account['enabled'] else '⚪'} {html.escape(str(account['name']))}"
+            for account in instagram_slots
+        )
+        or "   No named slots yet"
+    )
     return (
         f"🔗 <b>Channel accounts</b>\n{_divider()}\n\n"
-        "<i>One connected account per platform is supported.</i>\n\n"
+        "<i>One connected account per platform is supported. Named publishing slots: up to 3 YouTube and 2 Instagram.</i>\n\n"
         f"▶️ <b>YouTube:</b> {youtube_state}\n"
+        f"{youtube_slot_text}\n"
         f"   Publishing: {'enabled' if youtube_enabled else 'disabled'}\n"
         f"{youtube_setup_note}"
         f"📸 <b>Instagram:</b> "
         f"{'ready' if instagram_token_configured and instagram_id and instagram_public_url else 'setup required'}\n"
+        f"{instagram_slot_text}\n"
         f"   Account ID: {masked_instagram_id}\n"
         f"   Token: {instagram_source}\n"
         f"   Publishing: {'enabled' if instagram_enabled else 'disabled'}\n"
@@ -1705,6 +1728,25 @@ def _build_create_message() -> str:
         f"it builds a job from the top trend.\n"
         f"\n"
         f"{_divider()}"
+    )
+
+
+def _build_custom_creator_message() -> str:
+    return (
+        "🧠 <b>Custom Creator</b>\n"
+        f"{_divider()}\n\n"
+        "Send one natural-language brief. It can describe:\n"
+        "  • a six-part story\n"
+        "  • tone and target audience\n"
+        "  • script length and cliffhanger style\n"
+        "  • scene, camera and caption direction\n"
+        "  • title, thumbnail and hashtag preferences\n\n"
+        "<b>Example:</b>\n"
+        "<i>Create six cyber-safety Shorts. Serious tone, 45 seconds each, "
+        "cinematic scenes, simple Hindi, and a cliffhanger at every part.</i>\n\n"
+        "Nothing is published automatically. The bot creates separate preview "
+        "jobs and waits for per-job approval."
+        f"\n{_divider()}"
     )
 
 
@@ -1762,6 +1804,18 @@ async def handle_update(update: dict[str, Any]) -> None:
 
             elif data == "create":
                 await send_message(chat_id, _build_create_message(), _keyboard())
+
+            elif data == "custom_creator":
+                _pending_custom_creator.add(chat_id)
+                await send_message(
+                    chat_id,
+                    _build_custom_creator_message(),
+                    {"inline_keyboard": [[_button("❌ Cancel", "custom_cancel")], [_button("🔙 Back", "menu")]]},
+                )
+
+            elif data == "custom_cancel":
+                _pending_custom_creator.discard(chat_id)
+                await send_message(chat_id, "↩️ Custom Creator cancelled.", _keyboard())
 
             elif data == "controls":
                 await send_message(chat_id, _build_controls_message(), _controls_keyboard())
@@ -1863,6 +1917,20 @@ async def handle_update(update: dict[str, Any]) -> None:
                     _build_account_manager_message(),
                     _account_manager_keyboard(),
                 )
+
+            elif data.startswith("account_add:"):
+                platform = data.split(":", 1)[1]
+                if platform not in {"youtube", "instagram"}:
+                    await send_message(chat_id, "⚠️ Unsupported account platform.", _account_manager_keyboard())
+                else:
+                    _pending_account_name[chat_id] = platform
+                    await send_message(
+                        chat_id,
+                        f"➕ <b>Add {platform.title()} account slot</b>\n"
+                        "Send a short label, for example <code>Main Channel</code> or <code>Brand Reel</code>.\n"
+                        "Maximum: 3 YouTube and 2 Instagram account slots.",
+                        {"inline_keyboard": [[_button("❌ Cancel", "accounts")]]},
+                    )
 
             elif data == "youtube_verify":
                 from .youtube_oauth import get_authorized_channel
@@ -2690,6 +2758,74 @@ async def handle_update(update: dict[str, Any]) -> None:
 
         # ── Text command handling ───────────────────────────────────
         text = (message.get("text") or "").strip()
+
+        if chat_id in _pending_custom_creator:
+            if text == "/cancel":
+                _pending_custom_creator.discard(chat_id)
+                await send_message(chat_id, "↩️ Custom Creator cancelled.", _keyboard())
+                return
+            _pending_custom_creator.discard(chat_id)
+            brief = " ".join(text.split()).strip()
+            if len(brief) > 240:
+                await send_message(chat_id, "⚠️ Keep the custom brief under 240 characters.", _keyboard())
+                return
+            progress_message_id = await send_progress_message(
+                chat_id,
+                "🧠 <b>Custom Creator is planning the series…</b>\n"
+                "<code>[████░░░░]  Story brief</code>\n"
+                "<code>[░░░░░░░░]  Scripts and scene prompts</code>\n"
+                "<code>[░░░░░░░░]  Titles, thumbnails and metadata</code>",
+            )
+            try:
+                jobs = create_custom_jobs(brief, get_publish_target(), parts=6)
+                cards = "\n".join(
+                    f"  {_STATUS_EMOJI.get(job.status, '⚪')} <code>{job.id[:8]}</code> {html.escape(job.topic)}"
+                    for job in jobs
+                )
+                await finish_progress_message(
+                    chat_id,
+                    progress_message_id,
+                    "✅ <b>Six-part custom series planned</b>\n"
+                    f"{_divider()}\n\n"
+                    f"{cards}\n\n"
+                    "📝 Scripts, scene direction, titles, thumbnail prompts and hashtags "
+                    "are attached to each job.\n"
+                    "🛡️ <b>Publishing remains blocked until preview review and approval.</b>",
+                    _keyboard(),
+                )
+                progress_message_id = None
+            except Exception as exc:
+                logger.exception("Custom creator failed")
+                await finish_progress_message(
+                    chat_id,
+                    progress_message_id,
+                    f"⚠️ Could not create the custom series: {_safe_error_text(exc)}",
+                    _keyboard(),
+                )
+                progress_message_id = None
+            return
+
+        if chat_id in _pending_account_name:
+            platform = _pending_account_name.pop(chat_id)
+            try:
+                from .platform_accounts import add_account
+
+                account = add_account(platform, text)
+                await send_message(
+                    chat_id,
+                    f"✅ <b>{platform.title()} account slot added</b>\n"
+                    f"{html.escape(str(account['name']))}\n\n"
+                    "The slot is disabled until you connect and verify the real account. "
+                    "OAuth/publishing remains approval-gated.",
+                    _account_manager_keyboard(),
+                )
+            except (ValueError, RuntimeError) as exc:
+                await send_message(
+                    chat_id,
+                    f"⚠️ {html.escape(str(exc))}",
+                    _account_manager_keyboard(),
+                )
+            return
 
         if chat_id in _pending_schedule:
             if text == "/cancel":

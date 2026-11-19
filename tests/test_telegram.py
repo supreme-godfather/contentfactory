@@ -25,12 +25,16 @@ def isolated_database(monkeypatch):
         _pending_elevenlabs_voice_id,
         _pending_huggingface_image_endpoint,
         _pending_instagram_id,
+        _pending_account_name,
+        _pending_custom_creator,
         _unauthorized_notice_times,
     )
 
     get_settings.cache_clear()
     _unauthorized_notice_times.clear()
     _pending_instagram_id.clear()
+    _pending_account_name.clear()
+    _pending_custom_creator.clear()
     _pending_elevenlabs_voice_id.clear()
     _pending_huggingface_image_endpoint.clear()
     import app.db
