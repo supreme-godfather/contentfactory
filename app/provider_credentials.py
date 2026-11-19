@@ -50,6 +50,11 @@ PROVIDER_INFO: dict[str, dict[str, object]] = {
         "secret_label": "Hugging Face user access token",
         "wired": True,
     },
+    "minimax": {
+        "label": "🎞️ MiniMax H3 video",
+        "secret_label": "MiniMax API key",
+        "wired": True,
+    },
     "elevenlabs": {
         "label": "🗣️ ElevenLabs Text to Speech",
         "secret_label": "ElevenLabs API key",
@@ -104,6 +109,10 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
         "openai": "OpenAI Text-to-Speech",
         "off": "No AI narration",
     },
+    "video": {
+        "minimax": "MiniMax H3 text-to-video",
+        "off": "No AI video",
+    },
 }
 
 
@@ -153,13 +162,14 @@ def provider_status() -> dict[str, object]:
     for name, is_configured in configured.items():
         status[name] = is_configured
         cooldown = provider_cooldown_until(name) if name in {
-            "google", "openai", "gemini", "huggingface", "elevenlabs"
+            "google", "openai", "gemini", "huggingface", "elevenlabs", "minimax"
         } else None
         status[f"{name}_cooldown_until"] = cooldown.isoformat() if cooldown else None
     # Google can also be configured purely through environment variables.
     status["google"] = bool(configured["google"] or settings.google_service_account_json)
     status["elevenlabs_voice_id"] = bool(get_elevenlabs_voice_id())
     status["huggingface_image_endpoint"] = bool(get_huggingface_image_endpoint())
+    status["minimax"] = bool(configured["minimax"] or settings.minimax_api_key)
     return status
 
 
@@ -187,6 +197,8 @@ def get_provider_for_role(role: str) -> str:
         selected = legacy.value if legacy else get_settings().media_provider
     if role == "script":
         return selected if selected in {"openai", "gemini", "huggingface"} else "template"
+    if role == "video":
+        return selected if selected == "minimax" else "off"
     if selected in {"google", "openai"}:
         return selected
     return "off"
@@ -219,7 +231,7 @@ def is_provider_quota_error(error: Exception) -> bool:
 
 
 def mark_provider_quota_error(provider: str, error: Exception) -> datetime:
-    if provider not in {"google", "openai", "gemini", "huggingface", "elevenlabs"}:
+    if provider not in {"google", "openai", "gemini", "huggingface", "elevenlabs", "minimax"}:
         raise ValueError("Unsupported wired provider")
     retry_after = PROVIDER_COOLDOWN_DEFAULT_SECONDS
     if isinstance(error, httpx.HTTPStatusError):
@@ -281,6 +293,8 @@ def provider_candidates_for_role(role: str) -> list[str]:
     if no_paid_providers_enabled():
         if role == "image":
             return ["off"]
+        if role == "video":
+            return ["off"]
         if role == "voice" and primary == "edge_tts":
             return [primary]
         if primary == "off":
@@ -298,6 +312,13 @@ def provider_candidates_for_role(role: str) -> list[str]:
         if not status.get("huggingface"):
             return []
         if role == "image" and not status.get("huggingface_image_endpoint"):
+            return []
+        if provider_cooldown_until(primary) is not None:
+            return []
+        return [primary]
+    if primary == "minimax":
+        status = provider_status()
+        if not status.get("minimax"):
             return []
         if provider_cooldown_until(primary) is not None:
             return []

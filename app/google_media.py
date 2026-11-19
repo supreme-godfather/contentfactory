@@ -170,6 +170,62 @@ def generate_huggingface_image(prompt: str, destination: Path) -> None:
     destination.write_bytes(response.content)
 
 
+def generate_minimax_video(prompt: str, destination: Path) -> None:
+    settings = get_settings()
+    api_key = settings.minimax_api_key or get_provider_secret("minimax")
+    if not api_key:
+        raise RuntimeError("MiniMax video generation requires a configured API key.")
+
+    base_url = settings.minimax_base_url.rstrip("/")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._/-]*)?", base_url):
+        raise RuntimeError("MINIMAX_BASE_URL must be an HTTPS API base URL.")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    submitted = httpx.post(
+        f"{base_url}/video_generation",
+        headers=headers,
+        json={
+            "model": settings.minimax_model,
+            "content": [{"type": "text", "text": prompt[:2000]}],
+            "duration": max(5, min(10, settings.minimax_duration_seconds)),
+            "ratio": "9:16",
+        },
+        timeout=180,
+    )
+    submitted.raise_for_status()
+    task_id = submitted.json().get("task_id")
+    if not task_id:
+        raise RuntimeError("MiniMax did not return a task_id.")
+
+    for attempt in range(60):
+        polled = httpx.get(
+            f"{base_url}/query/video_generation/{task_id}",
+            headers=headers,
+            timeout=180,
+        )
+        polled.raise_for_status()
+        task = polled.json().get("task") or {}
+        status = str(task.get("status") or "").lower()
+        if status == "succeeded":
+            video_url = (task.get("content") or {}).get("url")
+            if not video_url:
+                raise RuntimeError("MiniMax returned success without a video URL.")
+            downloaded = httpx.get(video_url, timeout=180)
+            downloaded.raise_for_status()
+            if not downloaded.content:
+                raise RuntimeError("MiniMax returned an empty video.")
+            destination.write_bytes(downloaded.content)
+            return
+        if status in {"failed", "cancelled"}:
+            error = task.get("error") or task.get("base_resp") or "unknown error"
+            raise RuntimeError(f"MiniMax video task failed: {error}")
+        time.sleep(10 if attempt < 30 else 15)
+    raise RuntimeError("MiniMax video task timed out while waiting for completion.")
+
+
 def create_job_assets(
     job_id: str,
     topic: str,
@@ -227,6 +283,25 @@ def create_job_assets(
         except Exception:
             for image in generated_images:
                 image.unlink(missing_ok=True)
+            raise
+    elif get_provider_for_role("video") == "minimax":
+        if no_paid_providers_enabled():
+            raise RuntimeError(
+                "MiniMax video generation is blocked while no-paid mode is ON."
+            )
+        if not provider_status().get("minimax"):
+            raise RuntimeError("MiniMax video generation requires a configured API key.")
+        scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
+        generated_videos = []
+        try:
+            for index, prompt in enumerate(scene_prompts, start=1):
+                video = media_root / f"{job_id}-scene-video-{index}.mp4"
+                generated_videos.append(video)
+                generate_minimax_video(prompt, video)
+                assets[f"scene_video_{index}"] = video.name
+        except Exception:
+            for video in generated_videos:
+                video.unlink(missing_ok=True)
             raise
     else:
         image = media_root / f"{job_id}-scene-1.png"

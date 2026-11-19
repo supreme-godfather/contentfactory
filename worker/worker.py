@@ -316,6 +316,7 @@ def render_video(
     image_path: Path | None = None,
     audio_path: Path | None = None,
     scene_images: list[Path] | None = None,
+    scene_videos: list[Path] | None = None,
 ) -> str:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -333,16 +334,23 @@ def render_video(
     font_option = f":fontfile='{_escape_font_path(font)}'" if Path(font).is_file() else ""
     text_dir = output_dir / f"{job['id']}-captions"
     text_dir.mkdir(parents=True, exist_ok=True)
-    if scene_images is not None:
+    if scene_videos is not None:
+        if len(scene_videos) != 6 or any(not path.is_file() for path in scene_videos):
+            raise RuntimeError("All six generated MiniMax scene videos are required.")
+        scene_paths = scene_videos
+        scene_is_video = True
+    elif scene_images is not None:
         if len(scene_images) != 6 or any(not path.is_file() for path in scene_images):
             raise RuntimeError("All six generated scene images are required for this video.")
         scene_paths = scene_images
+        scene_is_video = False
     else:
         scene_paths = (
             [image_path]
             if image_path and image_path.is_file()
             else _create_storyboard_images(job, output_dir)
         )
+        scene_is_video = False
     if not scene_paths:
         raise RuntimeError("No illustration scenes were created for this video.")
     scene_duration = duration / len(scene_paths)
@@ -387,14 +395,21 @@ def render_video(
             "-threads",
             "1",
             "-y",
-            "-loop",
-            "1",
-            "-framerate",
-            "24",
-            "-t",
-            f"{scene_duration:.3f}",
-            "-i",
-            str(scene_path),
+        ]
+        if scene_is_video:
+            command.extend(["-stream_loop", "-1", "-i", str(scene_path)])
+        else:
+            command.extend([
+                "-loop",
+                "1",
+                "-framerate",
+                "24",
+                "-t",
+                f"{scene_duration:.3f}",
+                "-i",
+                str(scene_path),
+            ])
+        command.extend([
             "-vf",
             ",".join(filters),
             "-an",
@@ -415,7 +430,7 @@ def render_video(
             "-movflags",
             "+faststart",
             str(segment_path),
-        ]
+        ])
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
         segment_exists = segment_path.is_file()
         segment_size = segment_path.stat().st_size if segment_exists else 0
@@ -629,6 +644,11 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                             local_assets[f"scene_{index}"]
                             for index in range(1, 7)
                             if f"scene_{index}" in local_assets
+                        ] or None,
+                        [
+                            local_assets[f"scene_video_{index}"]
+                            for index in range(1, 7)
+                            if f"scene_video_{index}" in local_assets
                         ] or None,
                     )
                     thumbnails = render_thumbnails(job, Path(render_path), job_work_dir)

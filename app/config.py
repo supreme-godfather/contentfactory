@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     google_service_account_json: str = ""
     google_tts_voice: str = "hi-IN-Neural2-A"
     google_image_model: str = "imagen-3.0-generate-002"
+    minimax_api_key: str = ""
+    minimax_base_url: str = "https://api.minimax.io/v2"
+    minimax_model: str = "MiniMax-H3"
+    minimax_duration_seconds: int = 5
     media_provider: str = "google"
     instagram_enabled: bool = False
     instagram_user_id: str = ""

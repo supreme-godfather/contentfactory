@@ -130,6 +130,71 @@ def test_huggingface_script_route_is_blocked_by_no_paid_mode():
     request.assert_not_called()
 
 
+def test_minimax_provider_is_registered_but_disabled_in_no_paid_mode(monkeypatch):
+    from app.db import init_db
+    from app.provider_credentials import (
+        PROVIDER_INFO,
+        PROVIDER_ROLES,
+        no_paid_providers_enabled,
+        set_no_paid_providers_enabled,
+        set_provider_for_role,
+    )
+
+    init_db()
+    set_no_paid_providers_enabled(True)
+    set_provider_for_role("video", "minimax")
+
+    assert PROVIDER_INFO["minimax"]["wired"] is True
+    assert PROVIDER_ROLES["video"]["minimax"] == "MiniMax H3 text-to-video"
+    assert no_paid_providers_enabled() is True
+
+
+def test_minimax_video_submission_poll_and_download(monkeypatch, tmp_path):
+    import httpx
+    from unittest.mock import patch
+
+    from app.google_media import generate_minimax_video
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MINIMAX_API_KEY", "test_minimax_key")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/v2")
+    get_settings.cache_clear()
+
+    submit_response = httpx.Response(
+        200,
+        json={"task_id": "task-123"},
+        request=httpx.Request("POST", "https://api.minimax.io/v2/video_generation"),
+    )
+    poll_response = httpx.Response(
+        200,
+        json={
+            "task": {
+                "status": "succeeded",
+                "content": {"url": "https://cdn.example/video.mp4"},
+            }
+        },
+        request=httpx.Request("GET", "https://api.minimax.io/v2/query/video_generation/task-123"),
+    )
+    download_response = httpx.Response(
+        200,
+        content=b"mp4-data",
+        request=httpx.Request("GET", "https://cdn.example/video.mp4"),
+    )
+    destination = tmp_path / "scene.mp4"
+
+    with (
+        patch("app.google_media.httpx.post", return_value=submit_response) as post,
+        patch("app.google_media.httpx.get", side_effect=[poll_response, download_response]) as get,
+    ):
+        generate_minimax_video("A cinematic safe-driving scene", destination)
+
+    assert destination.read_bytes() == b"mp4-data"
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer test_minimax_key"
+    assert post.call_args.kwargs["json"]["model"] == "MiniMax-H3"
+    assert get.call_args_list[0].args[0].endswith("/query/video_generation/task-123")
+
+
 def test_no_paid_mode_blocks_openai_script_route():
     from unittest.mock import patch
 
