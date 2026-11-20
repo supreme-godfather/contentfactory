@@ -691,7 +691,7 @@ def claim_render_job(worker_id: str) -> ContentJob | None:
             select(ContentJob)
             .where(
                 or_(
-                    ContentJob.status == "queued",
+                    (ContentJob.status == "queued") & (ContentJob.stage == "render"),
                     (ContentJob.status == "rendering")
                     & (
                         (ContentJob.lease_expires_at.is_(None))
