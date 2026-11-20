@@ -627,6 +627,16 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                         raise RuntimeError(
                             f"{job['video_provider']} was selected but no provider video asset was supplied"
                         )
+                    if (
+                        job.get("format") in {"instagram_reel", "vertical_short"}
+                        and job.get("voice_provider") != "off"
+                        and "voiceover" not in (job.get("assets") or {})
+                    ):
+                        raise RuntimeError(
+                            f"{job['voice_provider']} narration was selected but no voiceover asset was supplied"
+                        )
+                    if not job.get("caption_cues"):
+                        raise RuntimeError("Timed caption cues are required for vertical videos")
                     job_work_dir.mkdir(parents=True, exist_ok=True)
                     assets = job.get("assets") or {}
                     local_assets = {}

@@ -162,6 +162,7 @@ def paid_provider_mode(
 
 
 class ProviderRoleRequest(BaseModel):
+    role: str = Field(default="video", min_length=1, max_length=20)
     provider: str = Field(min_length=1, max_length=40)
 
 
@@ -177,6 +178,20 @@ def select_video_provider(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"video_provider": request.provider}
+
+
+@app.post("/api/providers/role/select")
+def select_provider_role(
+    request: ProviderRoleRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, str]:
+    from .provider_credentials import set_provider_for_role
+
+    try:
+        set_provider_for_role(request.role, request.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"role": request.role, "provider": request.provider}
 
 
 class MediaGenerationToggleRequest(BaseModel):
@@ -533,6 +548,7 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "caption_cues": metadata.get("caption_cues", []),
             "assets": metadata.get("assets", {}),
             "video_provider": metadata.get("video_provider", "off"),
+            "voice_provider": metadata.get("voice_provider", "off"),
         }
     }
 

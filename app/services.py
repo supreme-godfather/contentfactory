@@ -327,6 +327,7 @@ def generate_content(job_id: str) -> ContentJob:
         from .provider_credentials import get_provider_for_role, media_generation_enabled
 
         video_provider = get_provider_for_role("video")
+        voice_provider = get_provider_for_role("voice")
         if (
             media_generation_enabled()
             and video_provider in {"minimax", "higgsfield"}
@@ -335,8 +336,26 @@ def generate_content(job_id: str) -> ContentJob:
             raise RuntimeError(
                 f"{video_provider} was selected, but no provider-generated video asset was created."
             )
+        if (
+            format_key in {"reel", "short"}
+            and media_generation_enabled()
+            and voice_provider != "off"
+            and "voiceover" not in assets
+        ):
+            raise RuntimeError(
+                f"{voice_provider} narration was selected, but no voiceover asset was created."
+            )
+        if not cues or any(
+            not isinstance(cue.get("text"), str)
+            or not cue["text"].strip()
+            or not cue["text"].strip("0 ").strip()
+            for cue in cues
+            if isinstance(cue, dict)
+        ):
+            raise RuntimeError("Caption generation produced invalid or placeholder text.")
         metadata["assets"] = assets
         metadata["video_provider"] = video_provider
+        metadata["voice_provider"] = voice_provider
         job.metadata_json = json.dumps(
             metadata,
             ensure_ascii=False,
