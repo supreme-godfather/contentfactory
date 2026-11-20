@@ -500,6 +500,7 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "story_arc": metadata.get("story_arc", ["problem", "stakes", "solution", "how", "payoff"]),
             "caption_cues": metadata.get("caption_cues", []),
             "assets": metadata.get("assets", {}),
+            "video_provider": metadata.get("video_provider", "off"),
         }
     }
 

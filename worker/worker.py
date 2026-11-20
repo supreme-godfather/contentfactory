@@ -621,6 +621,12 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                 print(f"Claimed {job['id']} · {job['topic']}", flush=True)
                 job_work_dir = output_dir / job["id"]
                 try:
+                    if job.get("video_provider") in {"minimax", "higgsfield"} and not any(
+                        key.startswith("scene_video_") for key in (job.get("assets") or {})
+                    ):
+                        raise RuntimeError(
+                            f"{job['video_provider']} was selected but no provider video asset was supplied"
+                        )
                     job_work_dir.mkdir(parents=True, exist_ok=True)
                     assets = job.get("assets") or {}
                     local_assets = {}

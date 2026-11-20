@@ -324,7 +324,19 @@ def generate_content(job_id: str) -> ContentJob:
             Path(get_settings().media_root),
             storyboard=storyboard,
         )
+        from .provider_credentials import get_provider_for_role, media_generation_enabled
+
+        video_provider = get_provider_for_role("video")
+        if (
+            media_generation_enabled()
+            and video_provider in {"minimax", "higgsfield"}
+            and not any(key.startswith("scene_video_") for key in assets)
+        ):
+            raise RuntimeError(
+                f"{video_provider} was selected, but no provider-generated video asset was created."
+            )
         metadata["assets"] = assets
+        metadata["video_provider"] = video_provider
         job.metadata_json = json.dumps(
             metadata,
             ensure_ascii=False,
