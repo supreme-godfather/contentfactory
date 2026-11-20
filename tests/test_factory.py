@@ -45,6 +45,9 @@ def test_only_railway_render_worker_can_claim_jobs():
     with SessionLocal() as session:
         assert session.get(ContentJob, job.id).status == "queued"
 
+    with SessionLocal() as session:
+        session.get(ContentJob, job.id).stage = "render"
+        session.commit()
     claimed = claim_render_job("railway-renderer")
     assert claimed is not None
     assert claimed.id == job.id
