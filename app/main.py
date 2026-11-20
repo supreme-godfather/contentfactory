@@ -302,6 +302,7 @@ def jobs(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
             "approval_version": job.approval_version,
             "stage": job.stage,
             "render_path": job.render_path,
+            "error_message": job.error_message,
             "asset_keys": sorted(
                 json.loads(job.metadata_json or "{}").get("assets", {}).keys()
             ) if job.metadata_json else [],
