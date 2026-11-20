@@ -53,7 +53,12 @@ PROVIDER_INFO: dict[str, dict[str, object]] = {
     },
     "minimax": {
         "label": "🎞️ MiniMax H3 video",
-        "secret_label": "MiniMax API key",
+        "secret_label": "MiniMax Platform API key (pay-as-you-go video)",
+        "wired": True,
+    },
+    "minimax_mplan": {
+        "label": "🧠 MiniMax M Plan text/research",
+        "secret_label": "MiniMax M Plan Subscription API key",
         "wired": True,
     },
     "elevenlabs": {
@@ -94,6 +99,7 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
     "script": {
         "template": "Built-in Hindi script",
         "gemini": "Gemini 3.5 Flash-Lite (AI Studio)",
+        "minimax": "MiniMax M Plan text/research",
         "huggingface": "Hugging Face Inference Providers",
         "openai": "OpenAI GPT-4o mini",
     },
@@ -145,6 +151,18 @@ def get_provider_secret(provider: str) -> str | None:
         return _cipher().decrypt(credential.secret_encrypted.encode()).decode()
 
 
+def delete_provider_secret(provider: str) -> bool:
+    if provider not in PROVIDER_INFO:
+        raise ValueError("Unsupported media provider")
+    with SessionLocal() as session:
+        credential = session.get(ProviderCredential, provider)
+        if credential is None:
+            return False
+        session.delete(credential)
+        session.commit()
+        return True
+
+
 def provider_status() -> dict[str, object]:
     """Configured flag per registered provider + the selected one."""
     settings = get_settings()
@@ -161,7 +179,8 @@ def provider_status() -> dict[str, object]:
     for name, is_configured in configured.items():
         status[name] = is_configured
         cooldown = provider_cooldown_until(name) if name in {
-            "google", "openai", "gemini", "huggingface", "elevenlabs", "minimax", "higgsfield"
+            "google", "openai", "gemini", "huggingface", "elevenlabs",
+            "minimax", "minimax_mplan", "higgsfield"
         } else None
         status[f"{name}_cooldown_until"] = cooldown.isoformat() if cooldown else None
     # Google can also be configured purely through environment variables.
@@ -169,6 +188,7 @@ def provider_status() -> dict[str, object]:
     status["elevenlabs_voice_id"] = bool(get_elevenlabs_voice_id())
     status["huggingface_image_endpoint"] = bool(get_huggingface_image_endpoint())
     status["minimax"] = bool(configured["minimax"] or settings.minimax_api_key)
+    status["minimax_mplan"] = bool(configured["minimax_mplan"])
     status["higgsfield"] = bool(configured["higgsfield"])
     return status
 
@@ -196,7 +216,7 @@ def get_provider_for_role(role: str) -> str:
         legacy = session.get(FactorySetting, "media_provider")
         selected = legacy.value if legacy else get_settings().media_provider
     if role == "script":
-        return selected if selected in {"openai", "gemini", "huggingface"} else "template"
+        return selected if selected in {"openai", "gemini", "huggingface", "minimax"} else "template"
     if role == "video":
         return selected if selected in {"minimax", "higgsfield"} else "off"
     if selected in {"google", "openai"}:

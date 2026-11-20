@@ -45,6 +45,18 @@ def test_connection_status_initially_unauthorized():
     assert status["scopes"] is None
 
 
+def test_fernet_key_whitespace_is_normalized(monkeypatch):
+    from app.encryption import get_fernet
+
+    key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", f"  {key}\n")
+    get_settings.cache_clear()
+
+    cipher = get_fernet()
+    encrypted = cipher.encrypt(b"test")
+    assert cipher.decrypt(encrypted) == b"test"
+
+
 def test_disconnect_removes_saved_authorization_and_revokes_google_access():
     from app.youtube_oauth import _fernet, connection_status, disconnect_authorization
 

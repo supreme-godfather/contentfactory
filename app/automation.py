@@ -13,7 +13,8 @@ from sqlalchemy import select
 
 from .config import get_settings
 from .db import FactorySetting, SessionLocal, TrendCandidate
-from .hq import get_publish_target
+from .hq import get_niche_label, get_publish_target
+from .discovery import research_trending_topics
 from .services import (
     create_job,
     generate_content,
@@ -60,6 +61,14 @@ def run_automation_cycle() -> dict[str, object]:
 
     settings = get_settings()
     result["jobs_requeued"] = requeue_failed_jobs(settings.automation_max_retries)
+    try:
+        researched = research_trending_topics(get_niche_label(), limit=20)
+        result["research_candidates_added"] = len(researched)
+    except Exception:
+        # Existing manually seeded candidates remain usable when the external
+        # research feed is unavailable.
+        logger.warning("Automation trend research unavailable", exc_info=True)
+        result["research_candidates_added"] = 0
 
     with SessionLocal() as session:
         trends = list(

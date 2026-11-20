@@ -58,6 +58,7 @@ from .provider_credentials import (
     get_provider_for_role,
     get_elevenlabs_voice_id,
     get_huggingface_image_endpoint,
+    delete_provider_secret,
     media_generation_enabled,
     no_paid_providers_enabled,
     provider_status,
@@ -696,6 +697,8 @@ def _provider_role_keyboard(role: str) -> dict[str, list[list[dict[str, str]]]]:
             " ✅"
             if provider in {"google", "openai", "gemini", "huggingface", "elevenlabs"} and status.get(provider)
             else " ✅"
+            if provider == "minimax" and status.get("minimax_mplan")
+            else " ✅"
             if provider == "edge_tts"
             else ""
         )
@@ -859,6 +862,8 @@ def _provider_detail_keyboard(name: str) -> dict[str, list[list[dict[str, str]]]
         "🔐 Replace API key" if configured else "🔐 Add API key",
         f"provider_key:{name}",
     )])
+    if configured:
+        rows.append([_button("🗑 Remove stored key", f"provider_remove:{name}")])
     rows.append([_button("🔙 All providers", "providers")])
     return {"inline_keyboard": rows}
 
@@ -2330,6 +2335,14 @@ async def handle_update(update: dict[str, Any]) -> None:
                         _provider_role_keyboard(role),
                     )
                     return
+                if provider == "minimax" and not status.get("minimax_mplan"):
+                    await send_message(
+                        chat_id,
+                        "⚠️ Add the MiniMax M Plan Subscription API key under API credentials first. "
+                        "The Platform API key is reserved for H3 video generation.",
+                        _provider_role_keyboard(role),
+                    )
+                    return
                 if provider == "huggingface" and role == "image" and not get_huggingface_image_endpoint():
                     await send_message(
                         chat_id,
@@ -2602,6 +2615,23 @@ async def handle_update(update: dict[str, Any]) -> None:
                         "Press /cancel to abort."
                     ),
                     _back_keyboard(),
+                )
+
+            elif data.startswith("provider_remove:"):
+                provider = data.split(":", 1)[1]
+                if provider not in PROVIDER_INFO:
+                    await send_message(chat_id, "⚠️ Unsupported provider.", _provider_keyboard())
+                    return
+                removed = delete_provider_secret(provider)
+                await send_message(
+                    chat_id,
+                    (
+                        f"🗑 <b>{html.escape(str(PROVIDER_INFO[provider]['label']))} key removed.</b>\n\n"
+                        "Existing jobs are unchanged. New jobs will not use this credential until you add it again."
+                        if removed
+                        else "⚪ No stored key was found for this provider."
+                    ),
+                    _provider_detail_keyboard(provider),
                 )
 
             elif data == "media:enable":

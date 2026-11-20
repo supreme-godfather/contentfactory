@@ -2,6 +2,8 @@ import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import httpx
+from xml.etree import ElementTree
 from sqlalchemy import select
 
 from .db import AnalyticsSnapshot, SessionLocal, TrendCandidate
@@ -74,6 +76,55 @@ def list_trends(limit: int = 20) -> list[TrendCandidate]:
                 .limit(limit)
             )
         )
+
+
+def research_trending_topics(
+    niche: str,
+    *,
+    geo: str = "IN",
+    limit: int = 20,
+) -> list[TrendCandidate]:
+    """Import current Google Trends RSS topics as approval-gated candidates.
+
+    This is deliberately a research signal, not a claim that a topic is viral.
+    The owner still reviews every generated job before publication.
+    """
+    clean_niche = " ".join(niche.split()).strip()
+    if not clean_niche:
+        raise ValueError("Niche is required")
+    response = httpx.get(
+        "https://trends.google.com/trending/rss",
+        params={"geo": geo},
+        timeout=20,
+        headers={"User-Agent": "content-factory-trend-research/1.0"},
+    )
+    response.raise_for_status()
+    root = ElementTree.fromstring(response.content)
+    candidates: list[TrendCandidate] = []
+    niche_words = {word.casefold() for word in re.findall(r"[^\W_]+", clean_niche) if len(word) > 2}
+    for item in root.findall(".//item")[: max(1, min(limit, 50))]:
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip() or None
+        if not title:
+            continue
+        title_words = {word.casefold() for word in re.findall(r"[^\W_]+", title) if len(word) > 2}
+        relevance = 75 if niche_words.intersection(title_words) else 55
+        candidates.append(
+            add_trend(
+                f"{title} — {clean_niche}",
+                source="google_trends_rss",
+                source_url=link,
+                freshness=95,
+                relevance=relevance,
+                originality=80,
+                risk=15,
+                transformation_notes=(
+                    "Trend signal imported automatically. Verify facts, add an original Hindi angle, "
+                    "and do not copy the source headline or creator."
+                )
+            )
+        )
+    return candidates
 
 
 def add_analytics_snapshot(

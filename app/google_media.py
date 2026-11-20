@@ -173,6 +173,8 @@ def generate_huggingface_image(prompt: str, destination: Path) -> None:
 
 def generate_minimax_video(prompt: str, destination: Path) -> None:
     settings = get_settings()
+    # H3 video consumes the pay-as-you-go Platform API key only. The M Plan
+    # subscription key is intentionally kept separate for text/research APIs.
     api_key = settings.minimax_api_key or get_provider_secret("minimax")
     if not api_key:
         raise RuntimeError("MiniMax video generation requires a configured API key.")

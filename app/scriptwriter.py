@@ -174,9 +174,13 @@ def build_script(
             return fallback
         if provider in {"gemini", "huggingface"} and provider_cooldown_until(provider) is not None:
             return fallback
-        if provider not in {"openai", "gemini", "huggingface"}:
+        if provider not in {"openai", "gemini", "huggingface", "minimax"}:
             return fallback
-        api_key = get_provider_secret(provider)
+        api_key = (
+            get_provider_secret("minimax_mplan")
+            if provider == "minimax"
+            else get_provider_secret(provider)
+        )
         if not api_key:
             return fallback
     except Exception:
@@ -225,7 +229,11 @@ def build_script(
     try:
         from .provider_credentials import get_provider_secret
 
-        api_key = get_provider_secret(provider)
+        api_key = (
+            get_provider_secret("minimax_mplan")
+            if provider == "minimax"
+            else get_provider_secret(provider)
+        )
         if not api_key:
             return fallback
         if provider == "gemini":
@@ -257,6 +265,24 @@ def build_script(
                     ],
                     "temperature": 0.7,
                     "max_tokens": 1800 if is_long else 700,
+                },
+                timeout=90,
+            )
+        elif provider == "minimax":
+            response = httpx.post(
+                "https://api.minimax.io/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "MiniMax-M3.1-Flash",
+                    "messages": [
+                        {"role": "system", "content": "You write original Hindi explainer scripts and research briefs."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 1800 if is_long else 900,
                 },
                 timeout=90,
             )

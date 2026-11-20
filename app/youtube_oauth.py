@@ -7,10 +7,11 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken
 
 from .config import get_settings
 from .db import FactorySetting, OAuthCredential, SessionLocal
+from .encryption import get_fernet
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -21,14 +22,8 @@ YOUTUBE_SCOPES = (
 )
 
 
-def _fernet() -> Fernet:
-    key = get_settings().token_encryption_key
-    if not key:
-        raise RuntimeError("TOKEN_ENCRYPTION_KEY is not configured")
-    try:
-        return Fernet(key.encode("ascii"))
-    except Exception as exc:
-        raise RuntimeError("TOKEN_ENCRYPTION_KEY is not a valid Fernet key") from exc
+def _fernet():
+    return get_fernet()
 
 
 def _redirect_uri() -> str:
