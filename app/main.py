@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
@@ -331,6 +331,30 @@ def generate_job_content(job_id: str, _: None = Depends(require_admin_api_token)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+def _generate_content_background(job_id: str) -> None:
+    try:
+        generate_content(job_id)
+    except Exception as exc:
+        from .db import ContentJob, SessionLocal
+
+        with SessionLocal() as session:
+            job = session.get(ContentJob, job_id)
+            if job is not None and job.status in {"queued", "rendering"}:
+                job.status = "failed"
+                job.error_message = f"{type(exc).__name__}: {str(exc)[:900]}"
+                session.commit()
+
+
+@app.post("/api/jobs/{job_id}/generate-content/async", status_code=202)
+def generate_job_content_async(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    background_tasks.add_task(_generate_content_background, job_id)
+    return {"id": job_id, "status": "generation_started", "stage": "topic"}
 
 
 @app.get("/api/trends")
