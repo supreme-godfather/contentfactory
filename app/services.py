@@ -22,6 +22,31 @@ from .storyboard import (
 _RENDER_CLAIM_LOCK_ID = 0x48434652434C414D
 
 
+def _resolve_job(session, job_id: str) -> ContentJob:
+    identifier = (job_id or "").strip()
+    if not identifier:
+        raise ValueError("Job not found")
+
+    job = session.get(ContentJob, identifier)
+    if job is not None:
+        return job
+    if len(identifier) < 8 or not re.fullmatch(r"[0-9a-fA-F-]+", identifier):
+        raise ValueError("Job not found")
+
+    matches = list(
+        session.scalars(
+            select(ContentJob)
+            .where(ContentJob.id.startswith(identifier.lower()))
+            .limit(2)
+        )
+    )
+    if not matches:
+        raise ValueError("Job not found")
+    if len(matches) > 1:
+        raise ValueError("Job ID is ambiguous; provide more characters")
+    return matches[0]
+
+
 def _topic_hashtags(topic: str) -> list[str]:
     words = re.findall(r"[^\W_]+", topic, flags=re.UNICODE)
     tags = []
@@ -719,9 +744,7 @@ def requeue_failed_jobs(max_retries: int) -> int:
 def publish_job(job_id: str) -> ContentJob:
     settings = get_settings()
     with SessionLocal() as session:
-        job = session.get(ContentJob, job_id)
-        if not job:
-            raise ValueError("Job not found")
+        job = _resolve_job(session, job_id)
         if is_paused():
             raise ValueError("Factory is paused")
         from .hq import get_daily_publish_limit, is_mock_publishing

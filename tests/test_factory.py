@@ -24,6 +24,18 @@ def test_import_is_clean():
     assert app.title == "Hindi Content Factory"
 
 
+def test_publish_job_accepts_short_id():
+    from app.db import SessionLocal
+    from app.services import _resolve_job, create_job
+
+    job = create_job("Short publishing ID test", "both", request_id="short-publish-test")
+
+    with SessionLocal() as session:
+        resolved = _resolve_job(session, job.id[:8])
+
+    assert resolved.id == job.id
+
+
 def test_factory_starts_paused():
     from app.config import get_settings
 
