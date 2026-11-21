@@ -4,16 +4,18 @@
 
 | Resource | Current state |
 |---|---|
-| Project | `serene-gentleness` (`75733d46-5731-49e9-b47e-cf870f606127`) |
+| Project | `contentfactory-pro` (`50d40dd6-0ca9-40ea-8f4a-316cafb5ad51`) |
 | Environment | `production` |
-| API service | `contentfactory` (`7aa783c0-c880-4684-a9cd-79e8d0c60b66`) |
+| API service | `contentfactory` (`805b3546-207d-47f9-bd3c-d5a792b4c937`) |
+| Render service | `factory-worker` (`4366f29d-0e8e-4a3c-abf7-9ee6517dc495`) |
+| Clipping service | `factory-clipper` (`a9e8e0d4-4fbc-4287-94c4-62a48b90823a`) |
 | PostgreSQL | `Postgres`, online, with its persistent volume |
 | API media/data volume | 500 MB at `/app/data` |
-| API domain | `https://contentfactory-production-511548c5.up.railway.app` |
+| API domain | `https://contentfactory-production-68a252bd.up.railway.app` |
 
 The API is online. `GET /health` and `GET /ready` returned HTTP 200. The
 Telegram webhook was registered at
-`https://contentfactory-production-511548c5.up.railway.app/telegram/webhook`.
+`https://contentfactory-production-68a252bd.up.railway.app/telegram/webhook`.
 The BotFather token, webhook secret, worker token, admin API token, and Fernet
 encryption key are stored as Railway variables; never print them, copy them
 into this file, or rotate the encryption key after credentials are stored.
@@ -30,24 +32,23 @@ The authenticated live status endpoint was checked and reported:
 
 ```text
 APP_PAUSED=false
-MOCK_PUBLISHING=true
+MOCK_PUBLISHING=false
 AUTOMATION_ENABLED=false
-INSTAGRAM_ENABLED=false
-YOUTUBE_ENABLED=false
+INSTAGRAM_ENABLED=true
+YOUTUBE_ENABLED=true
 ```
 
-The API is unpaused so Railway can render jobs, but publishing remains
-mock-only with both social platforms disabled. Do not enable live publishing
-as a deployment test; approval is still required.
+The API is unpaused and approval-gated live publishing is enabled. Automation
+remains off. A platform call still blocks until that platform has valid
+credentials/account configuration, a complete media/thumbnail package, and an
+explicit current-version owner approval.
 
 ## Source deployment
 
-The private source repository is `coderdoom-exe/contentfactory`. Railway's
-GitHub integration previously could not access that private repository, so
-Git-based auto-deploys are not yet verified. The Railway CLI can deploy the
-current local `factory` folder to the linked `contentfactory` service. This
-folder's Git remote points to a different repository; do not push its branch
-or change its remote as part of a Railway deployment.
+The source repository is `supreme-godfather/contentfactory`. Git-based
+auto-deploy is not relied upon for this deployment. The Railway CLI deploys the
+reviewed local `factory` folder to the selected service. Do not push, commit, or
+change remotes as an incidental part of a Railway deployment.
 
 The local `configure-railway-telegram.ps1` helper targets the verified
 production project/service, preserves existing secrets and the owner
@@ -62,6 +63,22 @@ replica. Its worker token is a Railway reference to `contentfactory`'s existing
 `WORKER_TOKEN`; never print or copy the secret into source, logs, or chat. The
 API accepts render claims only from `railway-renderer`; RDP workers cannot
 claim jobs. The always-on worker consumes Railway compute while idle.
+
+## Clipping worker
+
+The `factory-clipper` service is deployed as one process replica. It has no
+domain or persistent volume and receives a Railway reference to the API's
+`WORKER_TOKEN`. It accepts only bounded public HTTPS VOD/live jobs issued by the
+authenticated API, stores work in a unique temporary directory, uploads final
+candidate clips/covers, and deletes source files afterward. It never receives
+Telegram, platform OAuth, database, or Fish Audio credentials.
+
+Verified smoke tests:
+
+- Direct public MP4: 3 vertical candidates completed and previews returned 200.
+- Bounded public HLS capture: 90 seconds captured and split into 3 candidates.
+- Runtime startup verifies pinned yt-dlp, FFmpeg, ASS caption support, and Noto
+  fonts before polling.
 
 ## Cost and data safety
 

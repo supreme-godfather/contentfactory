@@ -17,7 +17,6 @@ class FakeResponse:
 def test_youtube_publisher_uploads_tags_and_custom_thumbnail(tmp_path, monkeypatch):
     import httpx
 
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'youtube-publish.db'}")
     from app.config import get_settings
 
     get_settings.cache_clear()
@@ -71,8 +70,14 @@ def test_youtube_publisher_uploads_tags_and_custom_thumbnail(tmp_path, monkeypat
     start_call = next(call for call in calls if call[0] == "post" and call[1].endswith("/videos"))
     upload_metadata = json.loads(start_call[2]["content"])
     assert upload_metadata["snippet"]["tags"] == ["Hindi", "Facts"]
+    processing_call = next(
+        call for call in calls
+        if call[0] == "get" and call[1].endswith("/youtube/v3/videos")
+    )
+    assert processing_call[2]["headers"]["Authorization"] == "Bearer test-token"
     thumbnail_call = next(call for call in calls if call[0] == "post" and call[1].endswith("/thumbnails/set"))
     assert thumbnail_call[2]["params"]["videoId"] == "video-id"
+    assert thumbnail_call[2]["headers"]["Authorization"] == "Bearer test-token"
     assert thumbnail_call[2]["content"] == thumbnail.read_bytes()
     get_settings.cache_clear()
 

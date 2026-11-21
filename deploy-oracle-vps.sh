@@ -34,12 +34,18 @@ if [[ ! "${TELEGRAM_BOT_TOKEN}" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{20,}$ ]]; then
     echo "The Telegram token format is invalid. Get the token from BotFather and try again." >&2
     exit 1
 fi
+read -r -p "Telegram owner numeric ID(s, comma separated): " TELEGRAM_OWNER_IDS
+if [[ ! "${TELEGRAM_OWNER_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+    unset TELEGRAM_BOT_TOKEN TELEGRAM_OWNER_IDS
+    echo "The Telegram owner allowlist must contain numeric IDs separated by commas." >&2
+    exit 1
+fi
 
 APP_ROOT=/opt/hindi-factory
 DATA_ROOT="${APP_ROOT}/data"
 INSTALLER_SOURCE="${PWD}"
 cleanup() {
-    unset TELEGRAM_BOT_TOKEN
+    unset TELEGRAM_BOT_TOKEN TELEGRAM_OWNER_IDS
 }
 trap cleanup EXIT
 
@@ -79,7 +85,7 @@ WORKER_LEASE_SECONDS=900
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 TELEGRAM_MODE=polling
 TELEGRAM_WEBHOOK_SECRET=
-TELEGRAM_OWNER_IDS=1112018699
+TELEGRAM_OWNER_IDS=${TELEGRAM_OWNER_IDS}
 YOUTUBE_ENABLED=false
 INSTAGRAM_ENABLED=false
 AUTOMATION_ENABLED=false

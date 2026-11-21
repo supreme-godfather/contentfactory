@@ -14,13 +14,33 @@ from typing import Any
 import httpx
 
 from .config import get_settings
+from .telegram_icons import (
+    ICON_SLOTS,
+    clear_icon_id,
+    get_icon_configuration,
+    has_custom_icons,
+    icon_button,
+    set_icon_id,
+    set_icons_enabled,
+    unicode_fallback_markup,
+)
 from .security import require_owner
 from .discovery import analytics_recommendations, analytics_summary, list_trends
+from .clipping import (
+    create_clip_job,
+    list_clip_candidates,
+    list_clip_jobs,
+    promote_clip_candidate,
+    retry_clip_job,
+    review_clip_candidate,
+)
 from .services import (
     approve_job,
+    approve_script,
     cancel_job,
     create_job,
     create_custom_jobs,
+    generate_assets,
     generate_content,
     is_paused,
     list_jobs,
@@ -53,35 +73,51 @@ from .hq import (
     set_render_worker_target,
 )
 from .provider_credentials import (
+    FISH_AUDIO_MODELS,
+    MINIMAX_SPEECH_MODELS,
     PROVIDER_INFO,
     PROVIDER_ROLES,
-    get_provider_for_role,
-    get_elevenlabs_voice_id,
-    get_huggingface_image_endpoint,
     delete_provider_secret,
+    get_elevenlabs_voice_id,
+    get_fish_audio_model_id,
+    get_fish_audio_reference_id,
+    get_huggingface_image_endpoint,
+    get_minimax_speech_model,
+    get_minimax_voice_id,
+    get_provider_for_role,
     media_generation_enabled,
     no_paid_providers_enabled,
     provider_status,
     select_provider,
+    set_elevenlabs_voice_id,
+    set_fish_audio_model_id,
+    set_fish_audio_reference_id,
+    set_huggingface_image_endpoint,
+    set_media_generation_enabled,
+    set_minimax_speech_model,
+    set_minimax_voice_id,
     set_no_paid_providers_enabled,
     set_provider_for_role,
-    set_media_generation_enabled,
-    set_elevenlabs_voice_id,
-    set_huggingface_image_endpoint,
     set_provider_secret,
 )
 
 logger = logging.getLogger(__name__)
 _pending_provider_setup: dict[int, str] = {}
 _pending_elevenlabs_voice_id: set[int] = set()
+_pending_fish_audio_reference_id: set[int] = set()
 _pending_huggingface_image_endpoint: set[int] = set()
+_pending_minimax_voice_id: set[int] = set()
 _pending_platform_setup: dict[int, str] = {}
 _pending_account_name: dict[int, str] = {}
+_pending_audio_upload: dict[int, str] = {}
+_pending_clip_source: dict[int, tuple[str, int | None]] = {}
+_pending_icon_slot: dict[int, str] = {}
 _pending_custom_creator: set[int] = set()
 _pending_custom_part_count: dict[int, int] = {}
 _pending_instagram_id: set[int] = set()
 _pending_schedule: dict[int, str] = {}
 _unauthorized_notice_times: OrderedDict[int, float] = OrderedDict()
+_background_tasks: set[asyncio.Task[object]] = set()
 _UNAUTHORIZED_NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
 _UNAUTHORIZED_NOTICE_MAX_USERS = 4096
 
@@ -104,15 +140,21 @@ def _claim_unauthorized_notice(user_id: int) -> bool:
 # ── Emoji constants for visual consistency ──────────────────────────────
 _STATUS_EMOJI = {
     "queued": "🟡",
+    "drafting_script": "📝",
+    "awaiting_script_approval": "🟣",
+    "generating_assets": "🎨",
     "awaiting_approval": "🟠",
     "approved": "🟢",
     "rendering": "🔵",
     "published": "✅",
     "failed": "🔴",
+    "cancelled": "⚫",
 }
 
 _STAGE_LABEL = {
     "topic": "Topic selection",
+    "script": "Script review",
+    "assets": "Media generation",
     "quality_check": "Quality review",
     "render": "Video render",
     "published": "Published",
@@ -124,28 +166,291 @@ def _button(text: str, callback_data: str) -> dict[str, str]:
     return {"text": text, "callback_data": callback_data}
 
 
+def _icon_button(slot: str, text: str, callback_data: str) -> dict[str, str]:
+    return icon_button(slot, text, callback_data=callback_data)
+
+
 def _link_button(text: str, url: str) -> dict[str, str]:
     return {"text": text, "url": url}
 
 
 def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
-    """Main menu — deliberately small: two buttons per row, grouped by task.
-
-    Create / review on top, monitoring in the middle, and the two control
-    surfaces (Automation panel, Controls panel) plus the pause/resume
-    master switch at the bottom. Everything else lives inside those
-    panels, so the main menu stays readable on a phone.
-    """
+    """Premium mobile-first navigation grouped by operator workflow."""
     paused = is_paused()
-    toggle = _button("▶️ Resume", "resume") if paused else _button("⏸️ Pause", "pause")
+    toggle = _icon_button("resume", "Resume factory", "resume") if paused else _icon_button("pause", "Pause factory", "pause")
     return {
         "inline_keyboard": [
-            [_button("✨ Create", "create"), _button("🧠 Custom Series", "custom_creator")],
-            [_button("📥 Queue", "queue"), _button("📊 Status", "status")],
-            [_button("🔥 Trends", "trends"), _button("📈 Analytics", "analytics")],
-            [_button("⚙️ Controls", "controls"), _button("🤖 Automation", "automation_panel"), toggle],
+            [_icon_button("studio", "Studio", "nav:studio"), _icon_button("review", "Review", "nav:review")],
+            [_icon_button("analytics", "Insights", "nav:insights"), _icon_button("operations", "Operations", "nav:ops")],
+            [_icon_button("settings", "Settings", "nav:settings"), _icon_button("automation", "Automation", "automation_panel")],
+            [toggle, _icon_button("refresh", "Refresh", "menu")],
         ]
     }
+
+
+def _studio_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    return {"inline_keyboard": [
+        [_icon_button("original_creation", "Create topic", "create"), _icon_button("custom_series", "Custom series", "custom_creator")],
+        [_icon_button("trends", "Trending topics", "trends"), _icon_button("automation", "Run automation", "automation:run")],
+        [_icon_button("clip_studio", "Clipping studio", "clip_studio")],
+        [_icon_button("back", "Home", "menu")],
+    ]}
+
+
+def _review_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    return {"inline_keyboard": [
+        [_icon_button("review_queue", "Review queue", "queue"), _icon_button("pipeline_status", "Pipeline status", "status")],
+        [_icon_button("quality_review", "Clip review", "clip_studio")],
+        [_icon_button("back", "Home", "menu")],
+    ]}
+
+
+def _insights_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    return {"inline_keyboard": [
+        [_icon_button("analytics", "Analytics", "analytics"), _icon_button("trends", "Trends", "trends")],
+        [_icon_button("analytics_sync", "Sync YouTube", "sync_analytics")],
+        [_icon_button("back", "Home", "menu")],
+    ]}
+
+
+def _operations_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    paused = is_paused()
+    toggle = _icon_button("resume", "Resume factory", "resume") if paused else _icon_button("pause", "Pause factory", "pause")
+    return {"inline_keyboard": [
+        [_icon_button("system_health", "System health", "system_health"), _icon_button("pipeline_status", "Status", "status")],
+        [_icon_button("review_queue", "Queue", "queue"), _icon_button("render_worker", "Render worker", "video_pipeline")],
+        [toggle, _icon_button("automation", "Automation", "automation_panel")],
+        [_icon_button("back", "Home", "menu")],
+    ]}
+
+
+def _settings_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    return {"inline_keyboard": [
+        [_icon_button("niche", "Niche", "hq:niche"), _icon_button("content_format", "Format", "hq:format")],
+        [_icon_button("providers", "Providers", "providers"), _icon_button("audio_library", "Audio", "audio_catalog")],
+        [_icon_button("accounts", "Accounts", "accounts"), _icon_button("publishing_destinations", "Destinations", "hq:publish_target")],
+        [_icon_button("daily_limit", "Daily limit", "hq:limit"), _icon_button("publishing_mode", "Publishing mode", "publishing_mode")],
+        [_icon_button("icon_theme", "Premium icons", "icon:panel:0")],
+        [_icon_button("settings", "Advanced controls", "controls")],
+        [_icon_button("back", "Home", "menu")],
+    ]}
+
+
+def _navigation_message(section: str) -> str:
+    copy = {
+        "studio": ("✨", "Studio", "Create original content, custom series, trend drafts, and future clips."),
+        "review": ("✅", "Review", "Review scripts before spend, then inspect rendered videos before publishing."),
+        "insights": ("📈", "Insights", "Use trends and measured channel analytics to choose what to make next."),
+        "ops": ("🖥", "Operations", "Monitor queues, workers, automation, failures, and factory state."),
+        "settings": ("⚙️", "Settings", "Configure craft, providers, audio, accounts, destinations, and limits."),
+    }
+    icon, title, detail = copy[section]
+    return f"{icon} <b>{title}</b>\n{_divider()}\n\n{detail}\n\nChoose an action below."
+
+
+_ICON_PAGE_SIZE = 8
+
+
+def _icon_panel_message(page: int) -> str:
+    enabled, configured = get_icon_configuration()
+    slots = list(ICON_SLOTS)
+    pages = max(1, (len(slots) + _ICON_PAGE_SIZE - 1) // _ICON_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    start = page * _ICON_PAGE_SIZE
+    lines = [
+        "💎 <b>Premium Icons</b>",
+        _divider(),
+        "",
+        f"State: <b>{'enabled' if enabled else 'Unicode fallback'}</b>",
+        f"Configured: <b>{len(configured)}/{len(ICON_SLOTS)}</b>",
+        f"Page: <b>{page + 1}/{pages}</b>",
+        "",
+        "Tap a semantic slot, then send its Telegram custom emoji or custom_emoji_id. "
+        "Send /clear while setting a slot to remove it. Unicode remains the safe fallback.",
+        "",
+    ]
+    for slot in slots[start:start + _ICON_PAGE_SIZE]:
+        lines.append(
+            f"{'✅' if slot in configured else '⚪'} {ICON_SLOTS[slot]} "
+            f"<code>{html.escape(slot)}</code>"
+        )
+    return "\n".join(lines)
+
+
+def _icon_panel_keyboard(page: int) -> dict[str, list[list[dict[str, str]]]]:
+    enabled, configured = get_icon_configuration()
+    slots = list(ICON_SLOTS)
+    pages = max(1, (len(slots) + _ICON_PAGE_SIZE - 1) // _ICON_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    start = page * _ICON_PAGE_SIZE
+    rows = [
+        [_button(
+            f"{'✓ ' if slot in configured else ''}{ICON_SLOTS[slot]} {slot.replace('_', ' ').title()}",
+            f"icon:set:{slot}",
+        )]
+        for slot in slots[start:start + _ICON_PAGE_SIZE]
+    ]
+    navigation = []
+    if page > 0:
+        navigation.append(_button("◀ Previous", f"icon:panel:{page - 1}"))
+    if page + 1 < pages:
+        navigation.append(_button("Next ▶", f"icon:panel:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([_button(
+        "Disable premium icons" if enabled else "Enable configured icons",
+        "icon:disable" if enabled else "icon:enable",
+    )])
+    rows.append([_button("Test home keyboard", "icon:test")])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
+    return {"inline_keyboard": rows}
+
+
+def _custom_emoji_id_from_message(message: dict[str, Any]) -> str:
+    entities = message.get("entities") or []
+    custom_ids = [
+        entity.get("custom_emoji_id")
+        for entity in entities
+        if isinstance(entity, dict)
+        and entity.get("type") == "custom_emoji"
+        and isinstance(entity.get("custom_emoji_id"), str)
+    ]
+    if len(custom_ids) == 1:
+        return str(custom_ids[0])
+    return str(message.get("text") or "").strip()
+
+
+async def _validate_custom_emoji_id(custom_emoji_id: str) -> None:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise RuntimeError("Telegram bot token is not configured.")
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/getCustomEmojiStickers"
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(url, json={"custom_emoji_ids": [custom_emoji_id]})
+        response.raise_for_status()
+    result = response.json().get("result")
+    if not isinstance(result, list) or len(result) != 1:
+        raise ValueError("Telegram did not recognize that custom emoji ID")
+
+
+async def _handle_icon_input(chat_id: int, message: dict[str, Any]) -> None:
+    slot = _pending_icon_slot[chat_id]
+    text = str(message.get("text") or "").strip()
+    if text == "/cancel":
+        _pending_icon_slot.pop(chat_id, None)
+        await send_message(chat_id, "↩️ Premium icon setup cancelled.", _icon_panel_keyboard(0))
+        return
+    if text == "/clear":
+        clear_icon_id(slot)
+        _pending_icon_slot.pop(chat_id, None)
+        await send_message(chat_id, f"🗑 Cleared <code>{html.escape(slot)}</code>.", _icon_panel_keyboard(0))
+        return
+    custom_emoji_id = _custom_emoji_id_from_message(message)
+    try:
+        await _validate_custom_emoji_id(custom_emoji_id)
+        set_icon_id(slot, custom_emoji_id)
+        set_icons_enabled(True)
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        await send_message(
+            chat_id,
+            f"⚠️ Could not validate that premium emoji ({html.escape(type(exc).__name__)}). "
+            "Send one Telegram custom emoji, its custom_emoji_id, /clear, or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    _pending_icon_slot.pop(chat_id, None)
+    await send_message(
+        chat_id,
+        f"✅ Premium icon saved for <code>{html.escape(slot)}</code>.",
+        _icon_panel_keyboard(0),
+    )
+
+
+def _clip_studio_message() -> str:
+    jobs = list_clip_jobs(8)
+    lines = [
+        "🎞 <b>Clipping Studio</b>",
+        _divider(),
+        "",
+        "Submit a public HTTPS video or live-stream URL. The isolated clip worker creates "
+        "three vertical candidates for review; nothing publishes automatically.",
+    ]
+    if not jobs:
+        lines.extend(["", "No clipping jobs yet."])
+    else:
+        lines.extend(["", "<b>Recent jobs</b>"])
+        for job in jobs:
+            lines.append(
+                f"• <code>{job.id[:8]}</code> · {html.escape(job.source_kind.upper())} · "
+                f"<b>{html.escape(job.status.replace('_', ' ').title())}</b> · "
+                f"{html.escape(job.source_display[:80])}"
+            )
+    return "\n".join(lines)
+
+
+def _clip_studio_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    rows = [
+        [_icon_button("clip_vod", "Clip a video URL", "clip_new:vod")],
+        [_icon_button("clip_live", "Capture live · 5 min", "clip_new:live:300"), _icon_button("clip_live", "15 min", "clip_new:live:900")],
+    ]
+    for job in list_clip_jobs(6):
+        rows.append([_button(
+            f"{'✅' if job.status == 'awaiting_review' else '⏳'} {job.id[:8]} · {job.status.replace('_', ' ')}",
+            f"clip_job:{job.id}",
+        )])
+    rows.extend([
+        [_icon_button("refresh", "Refresh", "clip_studio")],
+        [_icon_button("back", "Studio", "nav:studio")],
+    ])
+    return {"inline_keyboard": rows}
+
+
+def _clip_job_message(job_id: str) -> str:
+    job = next((item for item in list_clip_jobs(50) if item.id == job_id), None)
+    if job is None:
+        raise ValueError("Clip job not found")
+    candidates = list_clip_candidates(job.id)
+    lines = [
+        f"🎞 <b>Clip job {job.id[:8]}</b>",
+        _divider(),
+        "",
+        f"Source: {html.escape(job.source_display)}",
+        f"Mode: <b>{html.escape(job.source_kind.upper())}</b>",
+        f"Status: <b>{html.escape(job.status.replace('_', ' ').title())}</b>",
+        f"Stage: {html.escape(job.stage)}",
+    ]
+    if job.error_message:
+        lines.append(f"Error: {html.escape(job.error_message)}")
+    for candidate in candidates:
+        seconds = (candidate.end_ms - candidate.start_ms) / 1000
+        lines.extend([
+            "",
+            f"<b>#{candidate.rank} · score {candidate.score}/1000 · {seconds:.1f}s</b>",
+            html.escape(candidate.title),
+            f"Review: {html.escape(candidate.status.replace('_', ' '))}",
+        ])
+    return "\n".join(lines)
+
+
+def _clip_job_keyboard(job_id: str) -> dict[str, list[list[dict[str, str]]]]:
+    job = next((item for item in list_clip_jobs(50) if item.id == job_id), None)
+    rows = []
+    if job is not None and job.status == "failed":
+        rows.append([_button("🔁 Retry clip job", f"clip_retry:{job_id}")])
+    for candidate in list_clip_candidates(job_id):
+        rows.append([_button(f"▶️ Preview #{candidate.rank}", f"clip_preview:{candidate.id}")])
+        if candidate.status == "awaiting_review":
+            rows.append([
+                _button("✅ Approve", f"clip_review:approved:{candidate.id}"),
+                _button("❌ Reject", f"clip_review:rejected:{candidate.id}"),
+            ])
+        elif candidate.status == "approved":
+            rows.append([_button("📤 Send to publish queue", f"clip_promote:{candidate.id}")])
+    rows.extend([
+        [_button("🔄 Refresh", f"clip_job:{job_id}")],
+        [_button("🔙 Clipping Studio", "clip_studio")],
+    ])
+    return {"inline_keyboard": rows}
 
 
 def _controls_keyboard() -> dict[str, list[list[dict[str, str]]]]:
@@ -160,6 +465,7 @@ def _controls_keyboard() -> dict[str, list[list[dict[str, str]]]]:
             [_button("📡 Publishing destinations", "hq:publish_target")],
             [_button("📸 Reel profile", "reel_profile")],
             [_button("📤 Daily upload limit", "hq:limit"), _button("🧩 Providers", "providers")],
+            [_button("🎵 Audio library", "audio_catalog")],
             [_button("🧪 Mock/live publishing mode", "publishing_mode")],
             [_button("🔗 Channel accounts", "accounts")],
             [_button("📸 Instagram setup", "instagram_setup")],
@@ -177,7 +483,7 @@ def _niche_keyboard() -> dict[str, list[list[dict[str, str]]]]:
         [_button(f"{'✅ ' if key == current else ''}{label}", f"niche:{key}")]
         for key, label in NICHE_PRESETS.items()
     ]
-    rows.append([_button("🔙 Back to Controls", "controls")])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
     return {"inline_keyboard": rows}
 
 
@@ -198,7 +504,7 @@ def _format_keyboard() -> dict[str, list[list[dict[str, str]]]]:
         [_button(f"{'✅ ' if key == current else ''}{info['label']}", f"format:{key}")]
         for key, info in FORMATS.items()
     ]
-    rows.append([_button("🔙 Back to Controls", "controls")])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
     return {"inline_keyboard": rows}
 
 
@@ -213,7 +519,7 @@ def _publish_target_keyboard() -> dict[str, list[list[dict[str, str]]]]:
         ]
         for target, label in PUBLISH_TARGETS.items()
     ]
-    rows.append([_button("🔙 Back to Controls", "controls")])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
     return {"inline_keyboard": rows}
 
 
@@ -255,7 +561,7 @@ def _limit_keyboard() -> dict[str, list[list[dict[str, str]]]]:
         for n in DAILY_LIMIT_PRESETS
     ]
     rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
-    rows.append([_button("🔙 Back to Controls", "controls")])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
     return {"inline_keyboard": rows}
 
 
@@ -296,7 +602,7 @@ def _reel_profile_keyboard() -> dict[str, list[list[dict[str, str]]]]:
             for item in REEL_VOICE_PRESETS
         ]
     )
-    rows.append([_button("🔙 Back to Controls", "controls")])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
     return {"inline_keyboard": rows}
 
 
@@ -356,27 +662,48 @@ def _build_automation_message() -> str:
     )
 
 
-def _job_keyboard(job_id: str) -> dict[str, list[list[dict[str, str]]]]:
-    """Actions for a job, keeping revision and cancellation explicit."""
-    return {
-        "inline_keyboard": [
-            [
-                _button("✅ Approve", f"approve:{job_id}"),
-                _button("✍️ Revise", f"revise:{job_id}"),
-            ],
-            [
-                _button("📤 Publish now", f"publish:{job_id}"),
-                _button("🔍 Quality check", f"quality:{job_id}"),
-            ],
+def _job_keyboard(job_or_id: Any) -> dict[str, list[list[dict[str, str]]]]:
+    """Show only actions that are valid for the current job state."""
+    job = job_or_id if not isinstance(job_or_id, str) else None
+    job_id = str(getattr(job, "id", job_or_id))
+    if job is None and isinstance(job_or_id, str):
+        from .db import ContentJob, SessionLocal
+
+        with SessionLocal() as session:
+            job = session.get(ContentJob, job_or_id)
+
+    rows: list[list[dict[str, str]]] = []
+    if job is None:
+        rows.extend([
+            [_button("✅ Approve", f"approve:{job_id}"), _button("✍️ Revise", f"revise:{job_id}")],
+            [_button("📤 Publish now", f"publish:{job_id}"), _button("🔍 Quality check", f"quality:{job_id}")],
             [_button("▶️ Preview video", f"preview:{job_id}")],
-            [_button("⏰ Schedule reminder", f"schedule:{job_id}")],
-            [
-                _button("🔁 Retry", f"retry:{job_id}"),
-                _button("🗑 Cancel job", f"cancel:{job_id}"),
-            ],
-            [_button("🔙 Back to menu", "menu")],
-        ]
-    }
+        ])
+    elif job.status == "awaiting_script_approval":
+        rows.extend([
+            [_button("✅ Approve script & generate", f"script_approve:{job_id}:{job.content_version}")],
+            [_button("🔄 Rewrite script", f"script_regenerate:{job_id}:{job.content_version}")],
+            [_button("🗑 Reject job", f"script_reject:{job_id}:{job.content_version}")],
+        ])
+    elif job.status in {"drafting_script", "generating_assets", "queued", "rendering"}:
+        if job.status not in {"rendering", "generating_assets"}:
+            rows.append([_button("🗑 Cancel job", f"cancel:{job_id}")])
+        rows.append([_button("📥 Refresh queue", "queue")])
+    elif job.status == "awaiting_approval":
+        rows.extend([
+            [_button("✅ Approve final video", f"approve:{job_id}:{job.content_version}"), _button("✍️ Revise", f"revise:{job_id}")],
+            [_button("🔍 Quality check", f"quality:{job_id}"), _button("▶️ Preview video", f"preview:{job_id}")],
+            [_button("🗑 Cancel job", f"cancel:{job_id}")],
+        ])
+    elif job.status == "approved":
+        rows.extend([
+            [_button("📤 Publish now", f"publish:{job_id}"), _button("⏰ Schedule reminder", f"schedule:{job_id}")],
+            [_button("▶️ Preview video", f"preview:{job_id}"), _button("✍️ Revise", f"revise:{job_id}")],
+        ])
+    elif job.status == "failed":
+        rows.append([_button("🔁 Retry", f"retry:{job_id}"), _button("🗑 Cancel job", f"cancel:{job_id}")])
+    rows.append([_button("🔙 Back to menu", "menu")])
+    return {"inline_keyboard": rows}
 
 
 def _back_keyboard() -> dict[str, list[list[dict[str, str]]]]:
@@ -402,12 +729,16 @@ def _loading_bar(progress: int, width: int = 10, fill_char: str = "█", empty_c
 
 
 _PIPELINE_STAGES: dict[str, tuple[int, str]] = {
+    "drafting_script": (10, "10% · Drafting script"),
+    "awaiting_script_approval": (20, "20% · Script review"),
+    "generating_assets": (35, "35% · Generating media"),
     "queued": (20, "20% · Queued"),
     "rendering": (50, "50% · Rendering video"),
     "awaiting_approval": (75, "75% · Ready for review"),
     "approved": (90, "90% · Approved & ready to publish"),
     "published": (100, "100% · Published"),
     "failed": (0, "Failed"),
+    "cancelled": (0, "Cancelled"),
 }
 
 
@@ -549,7 +880,14 @@ async def send_message(chat_id: int, text: str, reply_markup: dict[str, Any] | N
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(url, json=_message(chat_id, text, reply_markup))
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            if response.status_code != 400 or not has_custom_icons(reply_markup):
+                raise
+            fallback = unicode_fallback_markup(reply_markup)
+            response = await client.post(url, json=_message(chat_id, text, fallback))
+            response.raise_for_status()
 
 
 async def send_progress_message(chat_id: int, text: str) -> int | None:
@@ -588,7 +926,14 @@ async def finish_progress_message(
         payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(url, json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            if response.status_code != 400 or not has_custom_icons(reply_markup):
+                raise
+            payload["reply_markup"] = unicode_fallback_markup(reply_markup)
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
 
 
 async def send_photo(chat_id: int, image_path: Path, caption: str) -> None:
@@ -621,6 +966,112 @@ async def send_video(chat_id: int, video_path: Path, caption: str) -> None:
                 files={"video": (video_path.name, video, "video/mp4")},
             )
             response.raise_for_status()
+
+
+async def send_audio(chat_id: int, audio_path: Path, caption: str) -> None:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise RuntimeError("Telegram bot token is not configured.")
+    if audio_path.stat().st_size > 49 * 1024 * 1024:
+        raise ValueError("Audio preview exceeds Telegram's 49 MB preview limit.")
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendAudio"
+    with audio_path.open("rb") as audio:
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                url,
+                data={"chat_id": str(chat_id), "caption": caption[:1000]},
+                files={"audio": (audio_path.name, audio, "audio/mpeg")},
+            )
+            response.raise_for_status()
+
+
+def _track_background_task(task: asyncio.Task[object]) -> None:
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _run_voice_benchmark_and_send(chat_id: int) -> None:
+    from .voice_benchmark import run_voice_benchmark
+
+    try:
+        result = await asyncio.to_thread(
+            run_voice_benchmark,
+            Path(get_settings().media_root),
+        )
+        output_dir = Path(str(result["output_dir"]))
+        samples = result["samples"]
+        if not isinstance(samples, list):
+            raise RuntimeError("Voice benchmark returned invalid results.")
+        for sample in samples:
+            if not isinstance(sample, dict) or sample.get("status") != "ready":
+                continue
+            label = str(sample["label"])
+            await send_audio(
+                chat_id,
+                output_dir / str(sample["filename"]),
+                f"Blind voice sample {label}",
+            )
+        failed = [
+            str(sample.get("label"))
+            for sample in samples
+            if isinstance(sample, dict) and sample.get("status") != "ready"
+        ]
+        note = f"\nFailed samples: {', '.join(failed)}" if failed else ""
+        await send_message(
+            chat_id,
+            "🎧 <b>Blind voice benchmark ready</b>\n\n"
+            "Listen on headphones and compare Hindi naturalness, emotion, pronunciation, "
+            f"and trust. Provider names remain hidden until reveal.{note}",
+            {"inline_keyboard": [
+                [_button(
+                    "Reveal providers",
+                    f"voice_benchmark_reveal:{result['benchmark_id']}",
+                )],
+                [_button("🔙 Back to Voice", "provider_role:voice")],
+            ]},
+        )
+    except Exception as exc:
+        logger.exception("Voice benchmark failed")
+        await send_message(
+            chat_id,
+            f"⚠️ Voice benchmark failed ({html.escape(type(exc).__name__)}). "
+            "Check provider credentials, voice IDs, credits, and no-paid mode.",
+            _provider_role_keyboard("voice"),
+        )
+
+
+def _script_review_message(job: Any) -> str:
+    script = html.escape((job.script_text or "").strip())
+    if len(script) > 3500:
+        script = script[:3497] + "..."
+    return (
+        f"📝 <b>Script review · v{job.content_version}</b>\n{_divider()}\n\n"
+        f"<b>{html.escape(job.topic)}</b>\n\n"
+        f"{script}\n\n"
+        "No voice, image, video, music, or rendering credits have been spent yet. "
+        "Approve this exact version to start media generation.\n"
+        f"{_divider()}"
+    )
+
+
+async def _generate_assets_and_notify(chat_id: int, job_id: str, version: int) -> None:
+    try:
+        job = await asyncio.to_thread(generate_assets, job_id, version)
+        await send_message(
+            chat_id,
+            "🎨 <b>Media package generated</b>\n"
+            "The job is queued for the Railway render worker.\n\n"
+            f"{_format_job_card(job)}",
+            _job_keyboard(job),
+        )
+    except Exception as exc:
+        logger.exception("Asset generation failed")
+        await send_message(
+            chat_id,
+            f"⚠️ Asset generation failed ({html.escape(type(exc).__name__)}). "
+            "No automatic retry was started. Review provider status, then use Retry.",
+            _keyboard(),
+        )
 
 
 def _publish_package_summary(job: Any) -> str:
@@ -659,6 +1110,178 @@ async def delete_message(chat_id: int, message_id: int) -> None:
         response.raise_for_status()
 
 
+def _audio_catalog_message() -> str:
+    from .audio_catalog import get_default_audio_asset, list_audio_assets
+
+    media_root = Path(get_settings().media_root)
+    entries = list_audio_assets(media_root)
+    default_bgm = get_default_audio_asset(media_root, "bgm")
+    default_sfx = get_default_audio_asset(media_root, "sfx")
+    lines = [
+        "🎵 <b>Audio library</b>",
+        _divider(),
+        "",
+        "Upload operator-approved MP3, WAV, OGG, or M4A files (maximum 20 MB). ",
+        "The selected BGM is attached to new jobs, ducked under narration, and never exposed publicly.",
+        "",
+        f"BGM tracks: <b>{sum(entry.get('kind') == 'bgm' for entry in entries)}</b>",
+        f"SFX files: <b>{sum(entry.get('kind') == 'sfx' for entry in entries)}</b>",
+        f"Default BGM: <b>{html.escape(str((default_bgm or {}).get('name') or 'none'))}</b>",
+        f"Default SFX: <b>{html.escape(str((default_sfx or {}).get('name') or 'none'))}</b>",
+    ]
+    if entries:
+        lines.extend(["", "<b>Catalog</b>"])
+        for entry in entries[:10]:
+            lines.append(
+                f"• {html.escape(str(entry.get('kind', '')).upper())} · "
+                f"{html.escape(str(entry.get('name') or entry.get('id'))[:80])}"
+            )
+    return "\n".join(lines)
+
+
+def _audio_catalog_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .audio_catalog import get_default_audio_asset, list_audio_assets
+
+    media_root = Path(get_settings().media_root)
+    entries = list_audio_assets(media_root)
+    defaults = {
+        kind: (get_default_audio_asset(media_root, kind) or {}).get("id")
+        for kind in ("bgm", "sfx")
+    }
+    rows = [[
+        _button("➕ Add BGM", "audio_add:bgm"),
+        _button("➕ Add SFX", "audio_add:sfx"),
+    ]]
+    for entry in entries[:10]:
+        asset_id = str(entry.get("id") or "")
+        kind = str(entry.get("kind") or "")
+        if not asset_id or kind not in {"bgm", "sfx"}:
+            continue
+        selected = "✓ " if defaults.get(kind) == asset_id else ""
+        label = str(entry.get("name") or asset_id)
+        rows.append([
+            _button(f"{selected}{kind.upper()} · {label[:28]}", f"audio_default:{kind}:{asset_id}"),
+            _button("🗑", f"audio_delete:{asset_id}"),
+        ])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
+    return {"inline_keyboard": rows}
+
+
+async def _download_telegram_audio(file_id: str, declared_size: int | None) -> bytes:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise RuntimeError("Telegram bot token is not configured.")
+    if declared_size is not None and declared_size > 20 * 1024 * 1024:
+        raise ValueError("Audio upload exceeds the 20 MB limit.")
+    async with httpx.AsyncClient(timeout=90) as client:
+        metadata = await client.get(
+            f"https://api.telegram.org/bot{settings.telegram_bot_token}/getFile",
+            params={"file_id": file_id},
+        )
+        metadata.raise_for_status()
+        file_path = (metadata.json().get("result") or {}).get("file_path")
+        if (
+            not isinstance(file_path, str)
+            or ".." in file_path
+            or not re.fullmatch(r"[A-Za-z0-9_./-]{1,240}", file_path)
+        ):
+            raise RuntimeError("Telegram returned an invalid audio path.")
+        response = await client.get(
+            f"https://api.telegram.org/file/bot{settings.telegram_bot_token}/{file_path}"
+        )
+        response.raise_for_status()
+        if len(response.content) > 20 * 1024 * 1024:
+            raise ValueError("Audio upload exceeds the 20 MB limit.")
+        return response.content
+
+
+async def _handle_audio_upload(chat_id: int, message: dict[str, Any]) -> None:
+    kind = _pending_audio_upload.get(chat_id)
+    text = str(message.get("text") or "").strip()
+    if text == "/cancel":
+        _pending_audio_upload.pop(chat_id, None)
+        await send_message(chat_id, "↩️ Audio upload cancelled.", _audio_catalog_keyboard())
+        return
+    media = message.get("audio") or message.get("document")
+    if not isinstance(media, dict) or not isinstance(media.get("file_id"), str):
+        await send_message(
+            chat_id,
+            "⚠️ Send an MP3, WAV, OGG, or M4A audio file, or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    original_name = str(media.get("file_name") or f"telegram-{kind}.mp3")
+    declared_size = media.get("file_size") if isinstance(media.get("file_size"), int) else None
+    data = await _download_telegram_audio(str(media["file_id"]), declared_size)
+    from .audio_catalog import register_audio_asset
+
+    entry = register_audio_asset(
+        Path(get_settings().media_root),
+        kind=str(kind),
+        original_name=original_name,
+        data=data,
+    )
+    _pending_audio_upload.pop(chat_id, None)
+    await send_message(
+        chat_id,
+        f"✅ <b>{html.escape(str(kind).upper())} added</b>\n"
+        f"{html.escape(str(entry['name']))}\n\n"
+        "The first file of each type becomes the default; select another below at any time.",
+        _audio_catalog_keyboard(),
+    )
+
+
+async def _handle_clip_source(chat_id: int, message: dict[str, Any], update: dict[str, Any]) -> None:
+    text = str(message.get("text") or "").strip()
+    if text == "/cancel":
+        _pending_clip_source.pop(chat_id, None)
+        await send_message(chat_id, "↩️ Clip submission cancelled.", _clip_studio_keyboard())
+        return
+    source_kind, capture_seconds = _pending_clip_source[chat_id]
+    update_id = update.get("update_id")
+    request_id = f"telegram:{update_id}" if isinstance(update_id, int) else None
+    try:
+        job = create_clip_job(
+            text,
+            source_kind,
+            capture_seconds=capture_seconds,
+            request_id=request_id,
+        )
+    except (RuntimeError, ValueError) as exc:
+        await send_message(
+            chat_id,
+            f"⚠️ {html.escape(str(exc))}\nSend a public HTTPS URL or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    _pending_clip_source.pop(chat_id, None)
+    await send_message(
+        chat_id,
+        f"✅ <b>Clip job queued</b>\n\n"
+        f"ID: <code>{job.id}</code>\n"
+        f"Mode: <b>{html.escape(job.source_kind.upper())}</b>\n"
+        "The isolated clip worker will prepare three review candidates.",
+        _clip_studio_keyboard(),
+    )
+
+
+async def _send_clip_candidate_preview(chat_id: int, candidate_id: str) -> None:
+    from .db import ClipCandidate, SessionLocal
+
+    with SessionLocal() as session:
+        candidate = session.get(ClipCandidate, candidate_id)
+        if candidate is None:
+            raise ValueError("Clip candidate not found")
+        filename = candidate.render_filename
+        title = candidate.title
+        rank = candidate.rank
+    media_root = Path(get_settings().media_root).resolve()
+    path = (media_root / filename).resolve()
+    if path.parent != media_root or not path.is_file():
+        raise ValueError("Clip candidate media is unavailable")
+    await send_video(chat_id, path, f"Clip #{rank} · {title}"[:1000])
+
+
 def _provider_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     rows = [
         [_button(
@@ -669,10 +1292,11 @@ def _provider_keyboard() -> dict[str, list[list[dict[str, str]]]]:
             ("script", "📝 Script"),
             ("image", "🖼 Image"),
             ("voice", "🎙 Voice"),
+            ("video", "🎬 AI video"),
         )
     ]
     rows.append([_button(
-        f"🎞 Video renderer: {get_render_worker_target()}",
+        f"🛠 Render worker: {get_render_worker_target()}",
         "video_pipeline",
     )])
     rows.append([_button("🔐 API credentials", "provider_credentials")])
@@ -684,7 +1308,7 @@ def _provider_keyboard() -> dict[str, list[list[dict[str, str]]]]:
         "🛑 No-paid providers: ON" if no_paid_providers_enabled() else "⚠️ No-paid providers: OFF",
         "spending:toggle",
     )])
-    rows.append([_button("🔙 Back to Controls", "controls")])
+    rows.append([_icon_button("back", "Settings", "nav:settings")])
     return {"inline_keyboard": rows}
 
 
@@ -695,9 +1319,11 @@ def _provider_role_keyboard(role: str) -> dict[str, list[list[dict[str, str]]]]:
     for provider, label in PROVIDER_ROLES[role].items():
         ready = (
             " ✅"
-            if provider in {"google", "openai", "gemini", "huggingface", "elevenlabs"} and status.get(provider)
+            if provider in {"google", "openai", "gemini", "huggingface", "elevenlabs", "fish_audio"}
+            and status.get(provider)
             else " ✅"
-            if provider == "minimax" and status.get("minimax_mplan")
+            if provider == "minimax"
+            and (status.get("minimax_mplan") if role == "script" else status.get("minimax"))
             else " ✅"
             if provider == "edge_tts"
             else ""
@@ -708,8 +1334,16 @@ def _provider_role_keyboard(role: str) -> dict[str, list[list[dict[str, str]]]]:
                 if status.get("huggingface") and status.get("huggingface_image_endpoint")
                 else ""
             )
-        if provider == "elevenlabs" and status.get("elevenlabs") and status.get("elevenlabs_voice_id"):
-            ready = " ✅"
+        if provider == "elevenlabs" and role == "voice":
+            ready = " ✅" if status.get("elevenlabs") and status.get("elevenlabs_voice_id") else ""
+        if provider == "fish_audio" and role == "voice":
+            ready = " ✅" if status.get("fish_audio") and status.get("fish_audio_reference_id") else ""
+        if provider == "minimax" and role == "voice":
+            ready = " ✅" if status.get("minimax") and status.get("minimax_voice_id") else ""
+        if provider == "minimax" and role == "video":
+            ready = " ✅" if status.get("minimax") else ""
+        if provider == "higgsfield" and role == "video":
+            ready = " ✅" if status.get("higgsfield") else ""
         selected = " 🎯" if current == provider else ""
         rows.append([
             _button(
@@ -729,6 +1363,25 @@ def _provider_role_keyboard(role: str) -> dict[str, list[list[dict[str, str]]]]:
             + (" ✅" if status.get("elevenlabs_voice_id") else " ⚪"),
             "elevenlabs_voice_id",
         )])
+        rows.append([_button(
+            "🐟 Set Fish Audio reference voice"
+            + (" ✅" if status.get("fish_audio_reference_id") else " ⚪"),
+            "fish_audio_reference_id",
+        )])
+        rows.append([_button(
+            f"🐟 Fish model: {get_fish_audio_model_id()}",
+            "fish_audio_model",
+        )])
+        rows.append([_button(
+            "🎚 Set MiniMax voice ID"
+            + (" ✅" if status.get("minimax_voice_id") else " ⚪"),
+            "minimax_voice_id",
+        )])
+        rows.append([_button(
+            f"🎚 MiniMax model: {get_minimax_speech_model()}",
+            "minimax_speech_model",
+        )])
+        rows.append([_button("🎧 Blind voice benchmark", "voice_benchmark")])
     rows.append([_button("🔐 Add / review API credentials", "provider_credentials")])
     rows.append([_button("🔙 Back to API settings", "providers")])
     return {"inline_keyboard": rows}
@@ -753,14 +1406,46 @@ def _provider_role_message(role: str) -> str:
             else ""
         )
         + (
-            "ElevenLabs uses monthly credits; check your plan and disable any paid top-ups. "
+            "ElevenLabs, Fish Audio, and MiniMax speech can consume API or plan credits. "
+            "Fish Audio requires a reference voice ID; MiniMax requires a voice ID. "
             if role == "voice"
+            else ""
+        )
+        + (
+            "MiniMax and Higgsfield generate selected high-impact scene videos; FFmpeg remains the final renderer. "
+            if role == "video"
             else ""
         )
         + "Repeatedly limited providers are temporarily skipped. "
         "If OpenAI scriptwriting is unavailable, the built-in Hindi template is used instead. "
         "Choices apply to new jobs only."
     )
+
+
+def _fish_audio_model_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    current = get_fish_audio_model_id()
+    rows = [
+        [_button(
+            f"{'✓ ' if model == current else ''}{model}",
+            f"fish_audio_model_set:{model}",
+        )]
+        for model in FISH_AUDIO_MODELS
+    ]
+    rows.append([_button("🔙 Back to Voice", "provider_role:voice")])
+    return {"inline_keyboard": rows}
+
+
+def _minimax_speech_model_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    current = get_minimax_speech_model()
+    rows = [
+        [_button(
+            f"{'✓ ' if model == current else ''}{model}",
+            f"minimax_speech_model_set:{model}",
+        )]
+        for model in MINIMAX_SPEECH_MODELS
+    ]
+    rows.append([_button("🔙 Back to Voice", "provider_role:voice")])
+    return {"inline_keyboard": rows}
 
 
 def _provider_video_message() -> str:
@@ -818,7 +1503,7 @@ def _provider_credentials_message() -> str:
         lines.append(f"• {info['label']}: {state}; {wired}{cooldown_note}.")
     lines.extend([
         "",
-        "Gemini is connected for scriptwriting; Edge TTS and ElevenLabs are connected for narration. "
+        "Gemini is connected for scriptwriting; Edge TTS, ElevenLabs, Fish Audio, and MiniMax are connected for narration. "
         "AI Studio free-tier availability and quotas can change; use an API project with billing disabled "
         "if you want to avoid accidental paid Gemini usage.",
         "No-paid mode blocks Vertex/OpenAI media routes and all paid-provider fallback. "
@@ -836,17 +1521,18 @@ def _provider_message() -> str:
             ("script", "📝 Script"),
             ("image", "🖼 Image"),
             ("voice", "🎙 Voice"),
+            ("video", "🎬 AI video"),
         )
     ]
     return (
         f"🧩 <b>AI &amp; media settings</b>\n{_divider()}\n\n"
         + "\n".join(role_lines)
-        + "\n  🎞 Video: <b>FFmpeg render worker</b>\n\n"
+        + "\n  🛠 Renderer: <b>FFmpeg Railway worker</b>\n\n"
         f"AI media generation: <b>{'enabled' if media_generation_enabled() else 'disabled'}</b>\n"
         f"No-paid providers: <b>{'ON' if no_paid_providers_enabled() else 'OFF'}</b>\n"
         f"Default provider: <b>{html.escape(str(PROVIDER_INFO.get(str(status['selected']), {}).get('label', status['selected'])))}</b>\n\n"
-        "Set script, image, and narration providers independently below. "
-        "Video rendering runs on FFmpeg at the worker, not a video API. "
+        "Set script, image, narration, and AI-video providers independently below. "
+        "AI video supplies selected scenes; final rendering always runs on the FFmpeg worker. "
         "Settings apply to new jobs; credentials are managed separately."
     )
 
@@ -864,7 +1550,7 @@ def _provider_detail_keyboard(name: str) -> dict[str, list[list[dict[str, str]]]
     )])
     if configured:
         rows.append([_button("🗑 Remove stored key", f"provider_remove:{name}")])
-    rows.append([_button("🔙 All providers", "providers")])
+    rows.append([_button("🔙 All providers", "provider_credentials")])
     return {"inline_keyboard": rows}
 
 
@@ -1119,14 +1805,14 @@ def _build_start_message() -> str:
     youtube_state = "🟢 Connected" if youtube["authorized"] else "⚪ Not connected"
     factory_state = "⏸️ Paused" if is_paused() else "▶️ Running"
     return (
-        f"🎬 <b>Content Factory</b>\n"
+        f"🎬 <b>Content Factory Studio</b>\n"
         f"{_divider()}\n"
         f"  Factory: <b>{factory_state}</b>\n"
         f"  YouTube: {youtube_state}\n"
         f"  Mode: {'Safe preview (mock)' if is_mock_publishing() else 'Live'}\n"
-        f"  Publishing: 🔒 Approval required, always\n"
+        f"  Workflow: 📝 Script Approval → 🎨 Media → ✅ Final Approval\n"
         f"\n"
-        f"Pick an action below, or type /help for commands.\n"
+        f"Choose a workspace below, or type /help for commands.\n"
         f"{_divider()}"
     )
 
@@ -1154,7 +1840,18 @@ def _build_status_message() -> str:
     worker_online = any(worker["online"] for worker in workers)
 
     jobs = list_jobs()
-    active_jobs = [j for j in jobs if j.status in ("queued", "rendering", "awaiting_approval")]
+    active_jobs = [
+        job
+        for job in jobs
+        if job.status in {
+            "queued",
+            "drafting_script",
+            "awaiting_script_approval",
+            "generating_assets",
+            "rendering",
+            "awaiting_approval",
+        }
+    ]
     max_concurrent = max(1, settings.max_concurrent_jobs)
     load_pct = min(100, round(len(active_jobs) / max_concurrent * 100))
     load_bar = _loading_bar(load_pct, width=8)
@@ -1723,11 +2420,11 @@ def _build_create_message() -> str:
         f"\n"
         f"Example: <code>/generate चंद्रयान मिशन की कहानी</code>\n"
         f"\n"
-        f"A preview is created for "
+        f"A script draft is created for "
         f"<b>{html.escape(PUBLISH_TARGETS[get_publish_target()])}</b> in the current format "
         f"({html.escape(str(get_format()['label']))}, niche: "
-        f"{html.escape(get_niche_label())}) and sent to the render worker. "
-        f"Nothing is published without your approval. Change format or "
+        f"{html.escape(get_niche_label())}) and sent to Script Review before any media provider runs. "
+        f"Nothing is generated or published without your approval. Change format or "
         f"niche any time in ⚙️ Controls.\n"
         f"\n"
         f"Or let Automation do it: open 🤖 Automation and run a cycle — "
@@ -1799,12 +2496,135 @@ async def handle_update(update: dict[str, Any]) -> None:
     try:
         require_owner(user_id)
 
+        if message and chat_id in _pending_icon_slot:
+            await _handle_icon_input(chat_id, message)
+            return
+        if message and chat_id in _pending_clip_source:
+            await _handle_clip_source(chat_id, message, update)
+            return
+        if message and chat_id in _pending_audio_upload:
+            await _handle_audio_upload(chat_id, message)
+            return
+
         # ── Callback query handling ─────────────────────────────────
         if callback:
             await answer_callback(str(callback.get("id", "")), "⏳ Working…")
             data = callback.get("data", "")
 
-            if data == "pause":
+            if data == "nav:studio":
+                await send_message(chat_id, _navigation_message("studio"), _studio_keyboard())
+
+            elif data == "nav:review":
+                await send_message(chat_id, _navigation_message("review"), _review_keyboard())
+
+            elif data == "nav:insights":
+                await send_message(chat_id, _navigation_message("insights"), _insights_keyboard())
+
+            elif data == "nav:ops":
+                await send_message(chat_id, _navigation_message("ops"), _operations_keyboard())
+
+            elif data == "nav:settings":
+                await send_message(chat_id, _navigation_message("settings"), _settings_keyboard())
+
+            elif data.startswith("icon:panel:"):
+                try:
+                    page = int(data.rsplit(":", 1)[1])
+                except ValueError:
+                    page = 0
+                await send_message(chat_id, _icon_panel_message(page), _icon_panel_keyboard(page))
+
+            elif data.startswith("icon:set:"):
+                slot = data.split(":", 2)[2]
+                if slot not in ICON_SLOTS:
+                    await send_message(chat_id, "⚠️ Unknown premium icon slot.", _settings_keyboard())
+                    return
+                _pending_icon_slot[chat_id] = slot
+                await send_message(
+                    chat_id,
+                    f"💎 <b>Set {html.escape(slot.replace('_', ' ').title())}</b>\n\n"
+                    "Send one Telegram custom emoji or its custom_emoji_id. "
+                    "Use /clear to remove this slot or /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data in {"icon:enable", "icon:disable"}:
+                set_icons_enabled(data == "icon:enable")
+                await send_message(chat_id, _icon_panel_message(0), _icon_panel_keyboard(0))
+
+            elif data == "icon:test":
+                await send_message(
+                    chat_id,
+                    "💎 <b>Premium icon preview</b>\n\n"
+                    "If custom button icons are unsupported for this bot/account, this message automatically retries with Unicode.",
+                    _keyboard(),
+                )
+
+            elif data == "clip_studio":
+                await send_message(chat_id, _clip_studio_message(), _clip_studio_keyboard())
+
+            elif data.startswith("clip_new:"):
+                parts = data.split(":")
+                source_kind = parts[1] if len(parts) > 1 else ""
+                if source_kind not in {"vod", "live"}:
+                    await send_message(chat_id, "⚠️ Invalid clipping mode.", _clip_studio_keyboard())
+                    return
+                capture_seconds = None
+                if source_kind == "live":
+                    try:
+                        capture_seconds = int(parts[2])
+                    except (IndexError, ValueError):
+                        capture_seconds = 900
+                _pending_clip_source[chat_id] = (source_kind, capture_seconds)
+                await send_message(
+                    chat_id,
+                    f"🎞 <b>Submit {html.escape(source_kind.upper())} source</b>\n\n"
+                    "Send the public HTTPS video/live URL as your next message. "
+                    "No browser cookies or private account sessions are used. Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data.startswith("clip_job:"):
+                job_id = data.split(":", 1)[1]
+                await send_message(chat_id, _clip_job_message(job_id), _clip_job_keyboard(job_id))
+
+            elif data.startswith("clip_retry:"):
+                job_id = data.split(":", 1)[1]
+                job = retry_clip_job(job_id)
+                await send_message(
+                    chat_id,
+                    f"🔁 <b>Clip job {job.id[:8]} queued for retry.</b>",
+                    _clip_job_keyboard(job.id),
+                )
+
+            elif data.startswith("clip_preview:"):
+                candidate_id = data.split(":", 1)[1]
+                await _send_clip_candidate_preview(chat_id, candidate_id)
+
+            elif data.startswith("clip_review:"):
+                parts = data.split(":")
+                if len(parts) != 3 or parts[1] not in {"approved", "rejected"}:
+                    await send_message(chat_id, "⚠️ Invalid clip review.", _clip_studio_keyboard())
+                    return
+                candidate = review_clip_candidate(parts[2], parts[1], user_id)
+                await send_message(
+                    chat_id,
+                    f"{'✅' if candidate.status == 'approved' else '❌'} "
+                    f"<b>Clip #{candidate.rank} {html.escape(candidate.status)}</b>",
+                    _clip_job_keyboard(candidate.job_id),
+                )
+
+            elif data.startswith("clip_promote:"):
+                candidate_id = data.split(":", 1)[1]
+                job = promote_clip_candidate(candidate_id, get_publish_target(), user_id)
+                await send_message(
+                    chat_id,
+                    "📤 <b>Clip moved to the publish queue</b>\n\n"
+                    f"{_format_job_card(job)}\n\n"
+                    "It is approved for the selected destination; publishing still requires your explicit action.",
+                    _job_keyboard(job),
+                )
+
+            elif data == "pause":
                 set_paused(True)
                 await send_message(
                     chat_id,
@@ -1856,6 +2676,44 @@ async def handle_update(update: dict[str, Any]) -> None:
 
             elif data == "controls":
                 await send_message(chat_id, _build_controls_message(), _controls_keyboard())
+
+            elif data == "audio_catalog":
+                await send_message(chat_id, _audio_catalog_message(), _audio_catalog_keyboard())
+
+            elif data.startswith("audio_add:"):
+                kind = data.split(":", 1)[1]
+                if kind not in {"bgm", "sfx"}:
+                    await send_message(chat_id, "⚠️ Unsupported audio type.", _audio_catalog_keyboard())
+                    return
+                _pending_audio_upload[chat_id] = kind
+                await send_message(
+                    chat_id,
+                    f"🎵 <b>Upload {html.escape(kind.upper())}</b>\n\n"
+                    "Send an MP3, WAV, OGG, or M4A file up to 20 MB. "
+                    "Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data.startswith("audio_default:"):
+                parts = data.split(":")
+                if len(parts) != 3 or parts[1] not in {"bgm", "sfx"}:
+                    await send_message(chat_id, "⚠️ Invalid audio selection.", _audio_catalog_keyboard())
+                    return
+                from .audio_catalog import set_default_audio_asset
+
+                set_default_audio_asset(Path(get_settings().media_root), parts[1], parts[2])
+                await send_message(chat_id, "✅ Default audio updated.", _audio_catalog_keyboard())
+
+            elif data.startswith("audio_delete:"):
+                asset_id = data.split(":", 1)[1]
+                from .audio_catalog import delete_audio_asset
+
+                removed = delete_audio_asset(Path(get_settings().media_root), asset_id)
+                await send_message(
+                    chat_id,
+                    "🗑 Audio removed." if removed else "⚪ Audio asset was not found.",
+                    _audio_catalog_keyboard(),
+                )
 
             elif data == "automation_panel":
                 await send_message(chat_id, _build_automation_message(), _automation_keyboard())
@@ -2309,6 +3167,127 @@ async def handle_update(update: dict[str, Any]) -> None:
                     _back_keyboard(),
                 )
 
+
+            elif data == "fish_audio_reference_id":
+                _pending_fish_audio_reference_id.add(chat_id)
+                await send_message(
+                    chat_id,
+                    "🐟 <b>Set Fish Audio reference voice</b>\n\n"
+                    "Send the reference/model ID from your Fish Audio voice page. "
+                    "This is an identifier, not the API key. Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data == "fish_audio_model":
+                await send_message(
+                    chat_id,
+                    "🐟 <b>Fish Audio model</b>\n\n"
+                    "S2.1 Pro is the production default. The free model is for testing; "
+                    "confirm your plan before using generated audio commercially.",
+                    _fish_audio_model_keyboard(),
+                )
+
+            elif data.startswith("fish_audio_model_set:"):
+                model_id = data.split(":", 1)[1]
+                try:
+                    set_fish_audio_model_id(model_id)
+                except ValueError:
+                    await send_message(
+                        chat_id,
+                        "⚠️ Unsupported Fish Audio model.",
+                        _fish_audio_model_keyboard(),
+                    )
+                    return
+                await send_message(
+                    chat_id,
+                    f"✅ <b>Fish Audio model set to {html.escape(model_id)}</b>",
+                    _fish_audio_model_keyboard(),
+                )
+
+            elif data == "minimax_voice_id":
+                _pending_minimax_voice_id.add(chat_id)
+                await send_message(
+                    chat_id,
+                    "🎚 <b>Set MiniMax speech voice ID</b>\n\n"
+                    "Send a MiniMax system, designed, or cloned voice ID. "
+                    "This is not the API key. Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data == "minimax_speech_model":
+                await send_message(
+                    chat_id,
+                    "🎚 <b>MiniMax speech model</b>\n\n"
+                    "Turbo is the cost-efficient default; HD is available for benchmark comparison.",
+                    _minimax_speech_model_keyboard(),
+                )
+
+            elif data.startswith("minimax_speech_model_set:"):
+                model_id = data.split(":", 1)[1]
+                try:
+                    set_minimax_speech_model(model_id)
+                except ValueError:
+                    await send_message(
+                        chat_id,
+                        "⚠️ Unsupported MiniMax speech model.",
+                        _minimax_speech_model_keyboard(),
+                    )
+                    return
+                await send_message(
+                    chat_id,
+                    f"✅ <b>MiniMax speech model set to {html.escape(model_id)}</b>",
+                    _minimax_speech_model_keyboard(),
+                )
+
+            elif data == "voice_benchmark":
+                await send_message(
+                    chat_id,
+                    "🎧 <b>Run a paid voice benchmark?</b>\n\n"
+                    "The factory will synthesize the same Hindi/Hinglish script with every ready "
+                    "Fish Audio, ElevenLabs, and MiniMax voice. This consumes provider credits. "
+                    "At least two providers must be fully configured and no-paid mode must be OFF.",
+                    {"inline_keyboard": [
+                        [_button("Run benchmark", "voice_benchmark_run")],
+                        [_button("Cancel", "provider_role:voice")],
+                    ]},
+                )
+
+            elif data == "voice_benchmark_run":
+                task = asyncio.create_task(_run_voice_benchmark_and_send(chat_id))
+                _track_background_task(task)
+                await send_message(
+                    chat_id,
+                    "⏳ <b>Voice benchmark started.</b> Samples will arrive here when ready.",
+                    _provider_role_keyboard("voice"),
+                )
+
+            elif data.startswith("voice_benchmark_reveal:"):
+                benchmark_id = data.split(":", 1)[1]
+                from .voice_benchmark import reveal_voice_benchmark
+
+                try:
+                    answer_key = reveal_voice_benchmark(
+                        Path(get_settings().media_root),
+                        benchmark_id,
+                    )
+                except ValueError:
+                    await send_message(chat_id, "⚠️ Voice benchmark result was not found.", _provider_role_keyboard("voice"))
+                    return
+                provider_labels = {
+                    "fish_audio": "Fish Audio",
+                    "elevenlabs": "ElevenLabs",
+                    "minimax": "MiniMax Speech",
+                }
+                lines = [
+                    f"{html.escape(label)}: <b>{html.escape(provider_labels.get(provider, provider))}</b>"
+                    for label, provider in sorted(answer_key.items())
+                ]
+                await send_message(
+                    chat_id,
+                    "🎧 <b>Voice benchmark reveal</b>\n\n" + "\n".join(lines),
+                    _provider_role_keyboard("voice"),
+                )
+
             elif data.startswith("provider_role:"):
                 role = data.split(":", 1)[1]
                 if role not in PROVIDER_ROLES:
@@ -2335,11 +3314,34 @@ async def handle_update(update: dict[str, Any]) -> None:
                         _provider_role_keyboard(role),
                     )
                     return
-                if provider == "minimax" and not status.get("minimax_mplan"):
+                if provider == "minimax" and role == "script" and not status.get("minimax_mplan"):
                     await send_message(
                         chat_id,
                         "⚠️ Add the MiniMax M Plan Subscription API key under API credentials first. "
                         "The Platform API key is reserved for H3 video generation.",
+                        _provider_role_keyboard(role),
+                    )
+                    return
+                if provider == "minimax" and role == "voice" and (
+                    not status.get("minimax") or not get_minimax_voice_id()
+                ):
+                    await send_message(
+                        chat_id,
+                        "⚠️ MiniMax speech is not ready. Add the Platform API key and voice ID first.",
+                        _provider_role_keyboard(role),
+                    )
+                    return
+                if provider == "minimax" and role == "video" and not status.get("minimax"):
+                    await send_message(
+                        chat_id,
+                        "⚠️ MiniMax video is not ready. Add the Platform API key first.",
+                        _provider_role_keyboard(role),
+                    )
+                    return
+                if provider == "higgsfield" and role == "video" and not status.get("higgsfield"):
+                    await send_message(
+                        chat_id,
+                        "⚠️ Higgsfield video is not ready. Add its Key ID:Key Secret first.",
                         _provider_role_keyboard(role),
                     )
                     return
@@ -2357,6 +3359,15 @@ async def handle_update(update: dict[str, Any]) -> None:
                         chat_id,
                         "⚠️ ElevenLabs is not ready yet. Add its API key and voice ID "
                         "under Voice settings first.",
+                        _provider_role_keyboard(role),
+                    )
+                    return
+                if provider == "fish_audio" and (
+                    not status.get("fish_audio") or not get_fish_audio_reference_id()
+                ):
+                    await send_message(
+                        chat_id,
+                        "⚠️ Fish Audio is not ready. Add its API key and reference voice ID first.",
                         _provider_role_keyboard(role),
                     )
                     return
@@ -2642,9 +3653,56 @@ async def handle_update(update: dict[str, Any]) -> None:
                 set_media_generation_enabled(False)
                 await send_message(chat_id, "⏸️ <b>AI media generation disabled</b>", _provider_keyboard())
 
+            elif data.startswith("script_approve:"):
+                parts = data.split(":")
+                if len(parts) != 3 or not parts[2].isdigit():
+                    await send_message(chat_id, "⚠️ Invalid script approval.", _keyboard())
+                    return
+                job_id, version = parts[1], int(parts[2])
+                job = approve_script(job_id, user_id, version)
+                task = asyncio.create_task(
+                    _generate_assets_and_notify(chat_id, job.id, job.content_version)
+                )
+                _track_background_task(task)
+                await send_message(
+                    chat_id,
+                    "✅ <b>Script approved</b>\n"
+                    f"Version v{job.content_version} is locked. Media generation has started.",
+                    _job_keyboard(job),
+                )
+
+            elif data.startswith("script_regenerate:"):
+                parts = data.split(":")
+                if len(parts) != 3 or not parts[2].isdigit():
+                    await send_message(chat_id, "⚠️ Invalid script revision.", _keyboard())
+                    return
+                job_id, version = parts[1], int(parts[2])
+                revised = revise_job(job_id, version)
+                job = await asyncio.to_thread(generate_content, revised.id)
+                await send_message(
+                    chat_id,
+                    _script_review_message(job),
+                    _job_keyboard(job),
+                )
+
+            elif data.startswith("script_reject:"):
+                parts = data.split(":")
+                if len(parts) != 3 or not parts[2].isdigit():
+                    await send_message(chat_id, "⚠️ Invalid script rejection.", _keyboard())
+                    return
+                job_id, version = parts[1], int(parts[2])
+                job = cancel_job(job_id, version)
+                await send_message(
+                    chat_id,
+                    f"🗑 <b>Script rejected and job cancelled.</b>\n\n{_format_job_card(job)}",
+                    _job_keyboard(job),
+                )
+
             elif data.startswith("approve:"):
-                job_id = data.split(":", 1)[1]
-                job = approve_job(job_id, user_id)
+                parts = data.split(":")
+                job_id = parts[1] if len(parts) > 1 else ""
+                version = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else None
+                job = approve_job(job_id, user_id, version)
                 await send_message(
                     chat_id,
                     (
@@ -2653,7 +3711,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                         f"Content version v{job.content_version} is now locked.\n"
                         f"{_divider()}"
                     ),
-                    _job_keyboard(job.id),
+                    _job_keyboard(job),
                 )
 
             elif data.startswith("reject:"):
@@ -3095,6 +4153,52 @@ async def handle_update(update: dict[str, Any]) -> None:
                 )
             return
 
+        if chat_id in _pending_fish_audio_reference_id:
+            if text == "/cancel":
+                _pending_fish_audio_reference_id.discard(chat_id)
+                await send_message(chat_id, "↩️ Fish Audio reference setup cancelled.", _provider_keyboard())
+                return
+            try:
+                set_fish_audio_reference_id(text)
+                _pending_fish_audio_reference_id.discard(chat_id)
+                await send_message(
+                    chat_id,
+                    "✅ <b>Fish Audio reference voice saved.</b>\n"
+                    "Add the API key under Credentials, then select Fish Audio under Voice. "
+                    "It remains blocked while no-paid mode is ON.",
+                    _provider_role_keyboard("voice"),
+                )
+            except ValueError as exc:
+                await send_message(
+                    chat_id,
+                    f"⚠️ {html.escape(str(exc))}\nSend the reference ID or /cancel.",
+                    _back_keyboard(),
+                )
+            return
+
+
+        if chat_id in _pending_minimax_voice_id:
+            if text == "/cancel":
+                _pending_minimax_voice_id.discard(chat_id)
+                await send_message(chat_id, "↩️ MiniMax voice setup cancelled.", _provider_keyboard())
+                return
+            try:
+                set_minimax_voice_id(text)
+                _pending_minimax_voice_id.discard(chat_id)
+                await send_message(
+                    chat_id,
+                    "✅ <b>MiniMax speech voice saved.</b>\n"
+                    "Add the MiniMax Platform API key, then select MiniMax under Voice.",
+                    _provider_role_keyboard("voice"),
+                )
+            except ValueError as exc:
+                await send_message(
+                    chat_id,
+                    f"⚠️ {html.escape(str(exc))}\nSend the voice ID or /cancel.",
+                    _back_keyboard(),
+                )
+            return
+
         if chat_id in _pending_provider_setup:
             if text == "/cancel":
                 _pending_provider_setup.pop(chat_id, None)
@@ -3103,7 +4207,7 @@ async def handle_update(update: dict[str, Any]) -> None:
             provider = _pending_provider_setup.pop(chat_id)
             try:
                 set_provider_secret(provider, text)
-                if provider != "huggingface":
+                if provider not in {"huggingface", "fish_audio"}:
                     select_provider(provider)
                 if provider == "gemini":
                     set_provider_for_role("script", "gemini")
@@ -3127,6 +4231,9 @@ async def handle_update(update: dict[str, Any]) -> None:
                     else "Set the voice ID under Controls → Providers → Voice. "
                     "ElevenLabs usage consumes plan credits and is blocked by no-paid mode."
                     if provider == "elevenlabs"
+                    else "Set the reference voice under Controls → Providers → Voice. "
+                    "Fish Audio remains blocked while no-paid mode is ON."
+                    if provider == "fish_audio"
                     else "Higgsfield uses a Key ID:Key Secret credential for Wan 2.6 "
                     "video generation. Paid generation remains blocked until no-paid mode is disabled."
                     if provider == "higgsfield"
@@ -3139,6 +4246,8 @@ async def handle_update(update: dict[str, Any]) -> None:
                 provider_saved_message = (
                     "✅ <b>Hugging Face key saved (encrypted)</b>"
                     if provider == "huggingface"
+                    else "✅ <b>Fish Audio key saved (encrypted)</b>"
+                    if provider == "fish_audio"
                     else f"✅ <b>{provider_label} — key saved (encrypted) and set as active</b>"
                 )
                 await send_message(
@@ -3229,24 +4338,14 @@ async def handle_update(update: dict[str, Any]) -> None:
             progress_message_id = await send_progress_message(
                 chat_id,
                 f"✨ <b>Creating for {html.escape(PUBLISH_TARGETS[get_publish_target()])}…</b>\n"
-                "Writing the script and preparing media for the render worker.",
+                "Writing a reviewable script. Media providers will not run before approval.",
             )
             update_id = update.get("update_id")
             request_id = f"telegram:{update_id}" if isinstance(update_id, int) else None
             job = create_job(topic, get_publish_target(), request_id=request_id)
             if job.status == "queued" and job.stage == "topic":
                 job = generate_content(job.id)
-                response = (
-                    f"✨ <b>Preview created</b>\n{_divider()}\n\n"
-                    f"{_format_job_card(job)}\n\n"
-                    f"⚙️ <b>Processing stages:</b>\n"
-                    f"   ├ 📝 Script generated:  [██████████] 100%\n"
-                    f"   ├ 🎞️ Video render:     [░░░░░░░░░░] Pending worker claim\n"
-                    f"   └ 🛡️ Quality gate:      [░░░░░░░░░░]   0% (Pending)\n\n"
-                    f"🎞️ Rendering starts when railway-renderer claims this queued job; "
-                    f"this card does not show live render progress.\n"
-                    f"{_divider()}"
-                )
+                response = _script_review_message(job)
             else:
                 response = (
                     f"ℹ️ <b>This request was already processed</b>\n{_divider()}\n\n"
@@ -3257,7 +4356,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                 chat_id,
                 progress_message_id,
                 response,
-                _job_keyboard(job.id),
+                _job_keyboard(job),
             )
             progress_message_id = None
 

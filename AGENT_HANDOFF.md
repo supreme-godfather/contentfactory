@@ -29,6 +29,76 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### OpenCode — 2026-11-21 (owner corrections + premium UI)
+
+- **Task:** Apply owner corrections after the engine/clipper release: Agent
+  Router is external coding infrastructure only; expose every generation role;
+  adopt only useful audited GTA Auto Clipper ideas; empty production queues;
+  enable publication; and prepare configurable Telegram Premium icons.
+- **Status:** Agent Router was removed from provider registry, encrypted setup,
+  scriptwriter, Telegram and tests. Telegram now independently selects Script,
+  Image, Voice, AI Video, and FFmpeg Renderer. `AnIntellectualBeing/GTA-Auto-
+  Clipper` was audited; only generic audio-energy spike/pre-roll, timed karaoke
+  caption, and source-provenance ideas were independently rewritten. Its GTA
+  keyword hardcoding, mutable runtime models, unbounded capture, unsafe URL/temp
+  behavior, assets, and alternate publisher were rejected.
+- **Premium UI:** Added semantic custom-emoji slots backed by
+  `FactorySetting`, owner setup under Settings -> Premium Icons, Telegram
+  `getCustomEmojiStickers` validation, and automatic HTTP-400 Unicode fallback.
+  `TELEGRAM_PREMIUM_ICONS.md` lists every slot and fallback.
+- **Production operation:** Cleared all non-published content jobs and all clip
+  jobs/candidates; queue verification returned no content/clip jobs. Enabled
+  approval-gated live YouTube and Instagram publishing, unpaused the factory,
+  and kept automation disabled. Missing credentials/account setup still block
+  platform API calls.
+- **Verification:** `python -m pytest -q` — 230 passed before deployment;
+  services redeployed and remained online. No commit or push was made because
+  the owner will do that.
+- **Next action:** Owner should add a Fish reference voice ID (the key alone is
+  not enough), verify the ElevenLabs plan, configure platform credentials, add
+  BGM/SFX, provide desired premium custom emojis/IDs through the new panel, and
+  run one approved private upload before regular posting.
+
+### OpenCode — 2026-11-21 (professional engine + universal clipper)
+
+- **Task:** Complete the original-content quality engine, add Fish Audio and
+  Agent Router, restructure Telegram, and build a secure VOD/live clipping
+  service inspired by (but not copied/deployed from)
+  `NaufalRizqullah/opensource-clipping`.
+- **Status:** Implemented and deployed to Railway project `contentfactory-pro`.
+  API, PostgreSQL, `factory-worker`, and new `factory-clipper` are online;
+  `/health` and `/ready` return 200; both workers are polling successfully.
+  Public publishing remains owner-gated and existing mock/platform switches
+  were not enabled by this work.
+- **Original engine:** Added script approval before media spend, Agent Router
+  draft/editor passes, Fish/ElevenLabs/MiniMax voice routes and blind benchmark,
+  ElevenLabs alignment, global escaped ASS captions, Telegram-managed BGM/SFX,
+  narration ducking/loudness/limiting, hybrid two-video/six-scene generation,
+  1080x1920 rendering, and state-aware premium Telegram navigation.
+- **Clipping engine:** Added encrypted VOD/live URL jobs, Postgres leases and
+  per-job lease tokens, a non-root pinned yt-dlp/FFmpeg clip worker, bounded
+  direct/yt-dlp ingest, VTT/optional Fish ASR timing, deterministic candidate
+  scoring, three non-overlapping vertical renders and covers, Telegram review,
+  and promotion to the existing publish queue. No browser cookies, private
+  sessions, remote plugins, bundled third-party music, or automatic publishing.
+- **Security/reliability:** Fixed YouTube thumbnail bearer auth, fail-closed
+  Telegram ownership, PostgreSQL render-claim race, test DB isolation, OAuth
+  signing-key validation, source URL checks, output limits, safe temporary
+  directories, and sanitized worker diagnostics.
+- **Verification:** `python -m pytest -q` — 225 passed; `compileall` and
+  `git diff --check` passed. Railway smoke tests completed a 52-second direct
+  MP4 into three clips and a bounded 90-second HLS capture into three clips;
+  authenticated preview retrieval returned 200.
+- **Files changed:** README/deployment docs; core config/db/security/services;
+  providers/script/media/quality/Telegram; render worker; new `app/clipping.py`,
+  `app/audio_catalog.py`, `app/captions.py`, `app/voice_providers.py`,
+  `app/voice_benchmark.py`; new `clipper/` service; focused tests.
+- **Next action:** Owner should add Fish Audio key/reference ID, Agent Router
+  key/model ID, and approved BGM/SFX through Telegram, explicitly allow paid
+  providers for one benchmark, run Blind Voice Benchmark, then create one
+  original script and one real client clip for private/mobile review. Do not
+  enable live publishing until those outputs pass review.
+
 ### Copilot — 2026-11-16 (Railway-only rendering)
 
 - **Task:** Honor the user's requirement that rendering run entirely on

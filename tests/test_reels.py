@@ -6,8 +6,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated_database(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'reels.db'}")
+def isolated_database(monkeypatch):
     monkeypatch.setenv("APP_PAUSED", "true")
     monkeypatch.setenv("MOCK_PUBLISHING", "true")
     from app.config import get_settings

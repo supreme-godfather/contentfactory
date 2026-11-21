@@ -210,7 +210,8 @@ def build_script(
         "5) Discussion CTA: ask the viewer one genuine question and invite them to answer in the comments.\n"
         + (
             "For this Reel, use short punchy Hindi lines, a mysterious documentary tone, "
-            "and visual beats suitable for bold captions every 2-4 seconds.\n"
+            "natural conversational breathing, contractions and emphasis that are comfortable "
+            "for spoken Hindi, and visual beats suitable for bold captions every 2-4 seconds.\n"
             if is_reel
             else ""
         )
@@ -316,7 +317,8 @@ def build_script(
             content = response.json()["choices"][0]["message"]["content"]
         if not isinstance(content, str) or len(content.strip()) < min_chars:
             return fallback
-        return content.strip()
+        content = content.strip()
+        return content
     except Exception as exc:
         try:
             from .provider_credentials import is_provider_quota_error, mark_provider_quota_error

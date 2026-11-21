@@ -22,7 +22,7 @@ and starts Telegram polling, conflicting with the production webhook.
 The worker does not need an inbound firewall rule, public IP, Railway login,
 Telegram token, YouTube/Instagram credentials, or database password. It only
 needs outbound HTTPS access to
-`https://contentfactory-production-511548c5.up.railway.app`.
+`https://contentfactory-production-68a252bd.up.railway.app`.
 
 ## Install the worker
 
@@ -36,7 +36,7 @@ needs outbound HTTPS access to
    ffprobe -version
    ```
 
-2. In Railway, open project `serene-gentleness` → service `contentfactory` →
+2. In Railway, open project `contentfactory-pro` → service `contentfactory` →
    **Variables**. Copy the existing `WORKER_TOKEN` privately; do not put it in
    chat, a command, or a file you upload.
 

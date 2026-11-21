@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
@@ -13,18 +14,33 @@ from pydantic import BaseModel, Field
 from .automation import automation_enabled, automation_loop, run_automation_cycle, set_automation_enabled
 from .backups import create_backup_archive, restore_backup_archive
 from .config import get_settings
-from .db import ContentJob, SessionLocal, init_db
+from .db import ClipCandidate, ContentJob, SessionLocal, init_db
+from .clipping import (
+    claim_clip_job,
+    complete_clip_job,
+    create_clip_job,
+    fail_clip_job,
+    list_clip_candidates,
+    list_clip_jobs,
+    promote_clip_candidate,
+    register_clip_candidate,
+    retry_clip_job,
+    renew_clip_lease,
+    review_clip_candidate,
+)
 from sqlalchemy import select
 from .discovery import add_analytics_snapshot, add_trend, analytics_recommendations, analytics_summary, list_trends, monetisation_readiness
+from .encryption import validate_youtube_encryption_configuration
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
-from .services import approve_job, claim_render_job, complete_render_job, create_job, fail_render_job, generate_content, is_paused, list_jobs, publish_job, retry_job, worker_heartbeat
+from .services import approve_job, approve_script, claim_render_job, complete_render_job, create_job, fail_render_job, generate_assets, generate_content, is_paused, list_jobs, publish_job, retry_job, worker_heartbeat
 from .telegram import configure_webhook, handle_update, telegram_polling_loop
 from .youtube_oauth import connection_status, create_authorization_url, exchange_code, sync_channel_analytics
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    validate_youtube_encryption_configuration()
     init_db()
     settings = get_settings()
     telegram_task = asyncio.create_task(
@@ -52,6 +68,50 @@ class GenerateRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
     platform: str | None = Field(default=None, pattern="^(youtube|instagram|both)$")
     brand: str = Field(default="learn_with_elite_explainer", max_length=80)
+
+
+class VersionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class ClipCreateRequest(BaseModel):
+    source_url: str = Field(min_length=1, max_length=2048)
+    source_kind: str = Field(pattern="^(vod|live)$")
+    capture_seconds: int | None = Field(default=None, ge=90, le=1800)
+    request_id: str | None = Field(default=None, max_length=160)
+
+
+class ClipReviewRequest(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+
+
+class ClipLeaseRequest(BaseModel):
+    stage: str = Field(pattern="^(ingest|analyse|render|upload)$")
+
+
+class ClipCompleteRequest(BaseModel):
+    duration_ms: int = Field(ge=45000, le=8 * 60 * 60 * 1000)
+    extractor: str = Field(min_length=1, max_length=80)
+    title: str = Field(default="", max_length=300)
+    actual_kind: str = Field(pattern="^(vod|live)$")
+    caption_source: str = Field(default="none", max_length=80)
+    audio_signal_events: int = Field(default=0, ge=0, le=10000)
+    source_id: str = Field(default="", max_length=160)
+    creator: str = Field(default="", max_length=160)
+
+
+class ClipFailRequest(BaseModel):
+    error_code: str = Field(min_length=1, max_length=200)
+
+
+class QueueCleanupRequest(BaseModel):
+    confirmation: str = Field(pattern="^CLEAR_PENDING_QUEUES$")
+
+
+class PublishingStateRequest(BaseModel):
+    live_enabled: bool
+    youtube_enabled: bool
+    instagram_enabled: bool
 
 
 class TrendRequest(BaseModel):
@@ -315,6 +375,11 @@ def jobs(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
             "status": job.status,
             "content_version": job.content_version,
             "approval_version": job.approval_version,
+            "script_approval_version": (
+                json.loads(job.metadata_json or "{}").get("script_approval_version")
+                if job.metadata_json
+                else None
+            ),
             "stage": job.stage,
             "render_path": job.render_path,
             "error_message": job.error_message,
@@ -357,9 +422,10 @@ def _generate_content_background(job_id: str) -> None:
 
         with SessionLocal() as session:
             job = session.get(ContentJob, job_id)
-            if job is not None and job.status in {"queued", "rendering"}:
+            if job is not None and job.status in {"queued", "drafting_script"}:
                 job.status = "failed"
-                job.error_message = f"{type(exc).__name__}: {str(exc)[:900]}"
+                job.stage = "script"
+                job.error_message = f"{type(exc).__name__}: script generation failed"
                 session.commit()
 
 
@@ -371,6 +437,53 @@ def generate_job_content_async(
 ) -> dict[str, object]:
     background_tasks.add_task(_generate_content_background, job_id)
     return {"id": job_id, "status": "generation_started", "stage": "topic"}
+
+
+@app.post("/api/jobs/{job_id}/script/approve")
+def approve_job_script(
+    job_id: str,
+    request: VersionRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    try:
+        job = approve_script(job_id, 0, request.expected_version)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+def _generate_assets_background(job_id: str, expected_version: int) -> None:
+    try:
+        generate_assets(job_id, expected_version)
+    except Exception as exc:
+        from .db import ContentJob, SessionLocal
+
+        with SessionLocal() as session:
+            job = session.get(ContentJob, job_id)
+            if (
+                job is not None
+                and job.content_version == expected_version
+                and job.status in {"queued", "generating_assets"}
+            ):
+                job.status = "failed"
+                job.stage = "assets"
+                job.error_message = f"{type(exc).__name__}: asset generation failed"
+                session.commit()
+
+
+@app.post("/api/jobs/{job_id}/assets/generate/async", status_code=202)
+def generate_job_assets_async(
+    job_id: str,
+    request: VersionRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    background_tasks.add_task(
+        _generate_assets_background,
+        job_id,
+        request.expected_version,
+    )
+    return {"id": job_id, "status": "asset_generation_started", "stage": "assets"}
 
 
 @app.get("/api/trends")
@@ -501,10 +614,357 @@ def publish(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str
     return {"id": job.id, "status": job.status, "mock": is_mock_publishing()}
 
 
+@app.post("/api/clips", status_code=202)
+def create_clip(
+    request: ClipCreateRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    try:
+        job = create_clip_job(
+            request.source_url,
+            request.source_kind,
+            capture_seconds=request.capture_seconds,
+            request_id=request.request_id,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "id": job.id,
+        "status": job.status,
+        "stage": job.stage,
+        "source_kind": job.source_kind,
+    }
+
+
+@app.post("/api/admin/queues/clear")
+def clear_queues(
+    request: QueueCleanupRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, int]:
+    from .maintenance import clear_pending_queues
+
+    try:
+        return clear_pending_queues(request.confirmation)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/publishing/state")
+def set_publishing_state(
+    request: PublishingStateRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, bool]:
+    from .hq import set_mock_publishing
+    from .platform_credentials import set_platform_enabled
+    from .automation import set_automation_enabled
+    from .services import set_paused
+
+    set_mock_publishing(not request.live_enabled)
+    set_platform_enabled("youtube", request.youtube_enabled)
+    set_platform_enabled("instagram", request.instagram_enabled)
+    set_automation_enabled(False)
+    set_paused(False)
+    return {
+        "live_enabled": request.live_enabled,
+        "youtube_enabled": request.youtube_enabled,
+        "instagram_enabled": request.instagram_enabled,
+        "human_approval_required": True,
+        "automation_enabled": False,
+    }
+
+
+@app.get("/api/clips")
+def clips(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    return [
+        {
+            "id": job.id,
+            "source": job.source_display,
+            "source_kind": job.source_kind,
+            "capture_seconds": job.capture_seconds,
+            "status": job.status,
+            "stage": job.stage,
+            "attempt": job.attempt,
+            "error_message": job.error_message,
+            "created_at": job.created_at.isoformat(),
+        }
+        for job in list_clip_jobs()
+    ]
+
+
+@app.get("/api/clips/{job_id}/candidates")
+def clip_candidates(
+    job_id: str,
+    _: None = Depends(require_admin_api_token),
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": candidate.id,
+            "rank": candidate.rank,
+            "start_ms": candidate.start_ms,
+            "end_ms": candidate.end_ms,
+            "score": candidate.score,
+            "title": candidate.title,
+            "reason": candidate.reason,
+            "status": candidate.status,
+            "size_bytes": candidate.size_bytes,
+        }
+        for candidate in list_clip_candidates(job_id)
+    ]
+
+
+@app.post("/api/clips/{job_id}/retry")
+def retry_clip(
+    job_id: str,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    try:
+        job = retry_clip_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+@app.post("/api/clips/candidates/{candidate_id}/review")
+def review_clip(
+    candidate_id: str,
+    request: ClipReviewRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    try:
+        candidate = review_clip_candidate(candidate_id, request.decision, 0)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": candidate.id, "status": candidate.status}
+
+
+@app.post("/api/clips/candidates/{candidate_id}/promote")
+def promote_clip(
+    candidate_id: str,
+    platform: str,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    try:
+        job = promote_clip_candidate(candidate_id, platform, 0)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "platform": job.platform}
+
+
+@app.get("/api/clips/candidates/{candidate_id}/media")
+def clip_candidate_media(
+    candidate_id: str,
+    _: None = Depends(require_admin_api_token),
+) -> FileResponse:
+    with SessionLocal() as session:
+        candidate = session.get(ClipCandidate, candidate_id)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="Clip candidate not found")
+        filename = candidate.render_filename
+    media_root = Path(get_settings().media_root).resolve()
+    path = (media_root / filename).resolve()
+    if path.parent != media_root or not path.is_file():
+        raise HTTPException(status_code=404, detail="Clip media not found")
+    return FileResponse(path, media_type="video/mp4", filename=filename)
+
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(update: dict[str, object], _: None = Depends(verify_webhook_secret)) -> dict[str, bool]:
     await handle_update(update)
     return {"ok": True}
+
+
+@app.post("/api/clip-worker/claim")
+def clip_worker_claim(
+    worker_id: str,
+    _: None = Depends(require_worker_token),
+) -> dict[str, object]:
+    claimed = claim_clip_job(worker_id)
+    if claimed is None:
+        return {"job": None, "reason": "queue_empty"}
+    job, lease_token, source_url = claimed
+    settings = get_settings()
+    return {
+        "job": {
+            "id": job.id,
+            "attempt": job.attempt,
+            "lease_token": lease_token,
+            "source_url": source_url,
+            "source_kind": job.source_kind,
+            "capture_seconds": job.capture_seconds,
+            "limits": {
+                "max_source_bytes": settings.max_clip_source_mb * 1024 * 1024,
+                "max_source_duration_ms": 8 * 60 * 60 * 1000,
+                "candidate_count": 3,
+                "candidate_min_ms": 15000,
+                "candidate_target_ms": 30000,
+                "candidate_max_ms": 60000,
+                "max_candidate_bytes": 49 * 1024 * 1024,
+            },
+            "render": {
+                "width": 1080,
+                "height": 1920,
+                "fps": 30,
+                "captions": "burned_ass",
+            },
+        }
+    }
+
+
+@app.post("/api/clip-worker/jobs/{job_id}/lease/renew")
+def clip_worker_renew(
+    job_id: str,
+    worker_id: str,
+    request: ClipLeaseRequest,
+    lease_token: str = Header(alias="X-Clip-Lease-Token"),
+    _: None = Depends(require_worker_token),
+) -> dict[str, object]:
+    try:
+        job = renew_clip_lease(job_id, worker_id, lease_token, request.stage)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "stage": job.stage, "lease_expires_at": job.lease_expires_at}
+
+
+@app.post("/api/clip-worker/jobs/{job_id}/candidates/{rank}")
+def clip_worker_upload_candidate(
+    job_id: str,
+    rank: int,
+    worker_id: str,
+    start_ms: int,
+    end_ms: int,
+    score: int,
+    title: str,
+    reason: str = "",
+    transcript_excerpt: str = "",
+    file: UploadFile = File(...),
+    youtube_thumbnail: UploadFile = File(...),
+    instagram_thumbnail: UploadFile = File(...),
+    lease_token: str = Header(alias="X-Clip-Lease-Token"),
+    _: None = Depends(require_worker_token),
+) -> dict[str, object]:
+    media_root = Path(get_settings().media_root).resolve()
+    media_root.mkdir(parents=True, exist_ok=True)
+    filename = f"{job_id}-clip-{rank}.mp4"
+    destination = (media_root / filename).resolve()
+    youtube_thumbnail_filename = f"{job_id}-clip-{rank}-youtube.jpg"
+    instagram_thumbnail_filename = f"{job_id}-clip-{rank}-instagram.jpg"
+    youtube_thumbnail_path = (media_root / youtube_thumbnail_filename).resolve()
+    instagram_thumbnail_path = (media_root / instagram_thumbnail_filename).resolve()
+    if destination.parent != media_root:
+        raise HTTPException(status_code=400, detail="Invalid clip destination")
+    maximum = 49 * 1024 * 1024
+    total = 0
+    digest = hashlib.sha256()
+    prefix = b""
+    created_paths = [destination, youtube_thumbnail_path, instagram_thumbnail_path]
+    try:
+        with destination.open("wb") as output:
+            while chunk := file.file.read(1024 * 1024):
+                total += len(chunk)
+                if total > maximum:
+                    raise HTTPException(status_code=413, detail="Clip candidate exceeds 49 MB")
+                if len(prefix) < 32:
+                    prefix = (prefix + chunk)[:32]
+                digest.update(chunk)
+                output.write(chunk)
+        if total < 1024 or b"ftyp" not in prefix:
+            raise HTTPException(status_code=400, detail="Clip candidate is not a valid MP4")
+        for upload, target in (
+            (youtube_thumbnail, youtube_thumbnail_path),
+            (instagram_thumbnail, instagram_thumbnail_path),
+        ):
+            data = upload.file.read(6 * 1024 * 1024)
+            if len(data) < 1024 or len(data) > 5 * 1024 * 1024 or not data.startswith(b"\xff\xd8\xff"):
+                raise HTTPException(status_code=400, detail="Clip thumbnail is not a valid JPEG")
+            target.write_bytes(data)
+        candidate = register_clip_candidate(
+            job_id,
+            worker_id,
+            lease_token,
+            rank=rank,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            score=score,
+            title=title,
+            reason=reason,
+            transcript_excerpt=transcript_excerpt,
+            filename=filename,
+            youtube_thumbnail_filename=youtube_thumbnail_filename,
+            instagram_thumbnail_filename=instagram_thumbnail_filename,
+            checksum=digest.hexdigest(),
+            size_bytes=total,
+        )
+    except Exception:
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        raise
+    return {"id": candidate.id, "rank": candidate.rank, "status": candidate.status}
+
+
+@app.post("/api/clip-worker/jobs/{job_id}/transcribe")
+def clip_worker_transcribe(
+    job_id: str,
+    worker_id: str,
+    file: UploadFile = File(...),
+    lease_token: str = Header(alias="X-Clip-Lease-Token"),
+    _: None = Depends(require_worker_token),
+) -> dict[str, object]:
+    try:
+        renew_clip_lease(job_id, worker_id, lease_token, "analyse")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    from .provider_credentials import no_paid_providers_enabled, provider_status
+
+    if no_paid_providers_enabled() or not provider_status().get("fish_audio"):
+        raise HTTPException(status_code=409, detail="fish_transcription_unavailable")
+    maximum = 25 * 1024 * 1024
+    data = file.file.read(maximum + 1)
+    if not data or len(data) > maximum:
+        raise HTTPException(status_code=413, detail="Transcription audio exceeds 25 MB")
+    from .voice_providers import transcribe_fish_audio
+
+    try:
+        return transcribe_fish_audio(data, file.filename or "clip-audio.mp3")
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"fish_transcription_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.post("/api/clip-worker/jobs/{job_id}/complete")
+def clip_worker_complete(
+    job_id: str,
+    worker_id: str,
+    request: ClipCompleteRequest,
+    lease_token: str = Header(alias="X-Clip-Lease-Token"),
+    _: None = Depends(require_worker_token),
+) -> dict[str, object]:
+    try:
+        job = complete_clip_job(
+            job_id,
+            worker_id,
+            lease_token,
+            request.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+@app.post("/api/clip-worker/jobs/{job_id}/fail")
+def clip_worker_fail(
+    job_id: str,
+    worker_id: str,
+    request: ClipFailRequest,
+    lease_token: str = Header(alias="X-Clip-Lease-Token"),
+    _: None = Depends(require_worker_token),
+) -> dict[str, object]:
+    try:
+        job = fail_clip_job(job_id, worker_id, lease_token, request.error_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status}
 
 
 @app.post("/api/worker/heartbeat")
@@ -545,7 +1005,10 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
                 )
             },
             "story_arc": metadata.get("story_arc", ["problem", "stakes", "solution", "how", "payoff"]),
+            "storyboard": metadata.get("storyboard", []),
             "caption_cues": metadata.get("caption_cues", []),
+            "caption_timing_source": metadata.get("caption_timing_source", "estimated"),
+            "audio_plan": metadata.get("audio_plan", {}),
             "assets": metadata.get("assets", {}),
             "video_provider": metadata.get("video_provider", "off"),
             "voice_provider": metadata.get("voice_provider", "off"),

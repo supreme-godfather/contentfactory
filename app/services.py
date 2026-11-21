@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text, update
 
 from .config import get_settings
 from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, WorkerLease
@@ -18,6 +18,8 @@ from .storyboard import (
     caption_cues,
     estimate_duration_seconds,
 )
+
+_RENDER_CLAIM_LOCK_ID = 0x48434652434C414D
 
 
 def _topic_hashtags(topic: str) -> list[str]:
@@ -251,19 +253,11 @@ def create_custom_jobs(
                     "duration_seconds": estimated_seconds,
                     "approval_required": True,
                 }
+                metadata["script_approval_version"] = None
+                metadata["assets"] = {}
                 stored.metadata_json = json.dumps(metadata, ensure_ascii=False)
-                assets = create_job_assets(
-                    stored.id,
-                    topic,
-                    stored.script_text,
-                    Path(get_settings().media_root),
-                    storyboard=storyboard,
-                    thumbnail_prompt=str(metadata["thumbnail_prompt"]),
-                )
-                metadata["assets"] = assets
-                stored.metadata_json = json.dumps(metadata, ensure_ascii=False)
-                stored.stage = "render"
-                stored.status = "queued"
+                stored.stage = "script"
+                stored.status = "awaiting_script_approval"
                 stored.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 session.refresh(stored)
@@ -272,58 +266,205 @@ def create_custom_jobs(
     return jobs
 
 
+def _mark_generation_failed(job_id: str, version: int, stage: str, exc: Exception) -> None:
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if job is None or job.content_version != version or job.stage != stage:
+            return
+        job.status = "failed"
+        job.error_message = f"{type(exc).__name__}: generation failed during {stage}"
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+
+
 def generate_content(job_id: str) -> ContentJob:
+    """Draft the current script package without spending on media providers."""
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)
         if not job:
             raise ValueError("Job not found")
-        if job.status not in {"queued", "rendering"}:
-            raise ValueError("Job is not available for content generation")
+        if job.status == "awaiting_script_approval" and job.stage == "script":
+            return job
+        if job.status != "queued" or job.stage != "topic":
+            raise ValueError("Job is not available for script generation")
+        version = job.content_version
+        topic = job.topic
+        brand = job.brand
+        claim = session.execute(
+            update(ContentJob)
+            .where(
+                ContentJob.id == job_id,
+                ContentJob.content_version == version,
+                ContentJob.status == "queued",
+                ContentJob.stage == "topic",
+            )
+            .values(
+                status="drafting_script",
+                stage="script",
+                error_message=None,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        if claim.rowcount != 1:
+            session.rollback()
+            raise ValueError("Job script generation is already in progress")
+        session.commit()
+
+    try:
         from .hq import get_format, get_format_key, get_niche_label
 
         format_key = get_format_key()
         format_info = get_format()
         niche_label = get_niche_label()
-        job.script_text = build_script(job.topic, job.brand, format=format_key, niche=niche_label)
-        storyboard = build_storyboard(job.topic, job.script_text)
-        cues = caption_cues(job.script_text)
-        estimated_seconds = estimate_duration_seconds(job.script_text)
+        script = build_script(topic, brand, format=format_key, niche=niche_label)
+        storyboard = build_storyboard(topic, script)
+        cues = caption_cues(script)
+        estimated_seconds = estimate_duration_seconds(script)
+        if not cues or any(
+            not isinstance(cue.get("text"), str)
+            or not cue["text"].strip()
+            or not cue["text"].strip("0 ").strip()
+            for cue in cues
+            if isinstance(cue, dict)
+        ):
+            raise RuntimeError("Caption generation produced invalid or placeholder text.")
         metadata = {
-                **_build_publish_metadata(
-                    topic=job.topic,
-                    format_key=format_key,
-                    niche_label=niche_label,
-                ),
-                "disclosure": "AI-assisted production; facts require source verification.",
-                "format": format_info["format_code"],
-                "aspect_ratio": format_info["aspect_ratio"],
-                "niche": niche_label,
-                "duration_seconds": estimated_seconds,
-                "target_duration_seconds": format_info["target_duration_seconds"],
-                "story_arc": [scene["stage"] for scene in storyboard],
-                "storyboard": storyboard,
-                "style_anchor": STYLE_ANCHOR,
-                "visual_direction": (
-                    "dark cinematic faceless Reel; high-contrast captions; original visuals; no creator copying"
-                    if format_key == "reel"
-                    else "original Hindi explainer visuals; no creator copying"
-                ),
-                "profile": (
-                    get_settings().reel_profile_name
-                    if format_key == "reel"
-                    else "hindi_explainer"
-                ),
-                "caption_policy": "burned captions required for muted playback",
-                "caption_cues": cues,
-                "approval_required": True,
-            }
-        assets = create_job_assets(
-            job.id,
-            job.topic,
-            job.script_text,
-            Path(get_settings().media_root),
-            storyboard=storyboard,
+            **_build_publish_metadata(
+                topic=topic,
+                format_key=format_key,
+                niche_label=niche_label,
+            ),
+            "disclosure": "AI-assisted production; facts require source verification.",
+            "format": format_info["format_code"],
+            "aspect_ratio": format_info["aspect_ratio"],
+            "niche": niche_label,
+            "duration_seconds": estimated_seconds,
+            "target_duration_seconds": format_info["target_duration_seconds"],
+            "story_arc": [scene["stage"] for scene in storyboard],
+            "storyboard": storyboard,
+            "style_anchor": STYLE_ANCHOR,
+            "visual_direction": (
+                "dark cinematic faceless Reel; high-contrast captions; original visuals; no creator copying"
+                if format_key == "reel"
+                else "original Hindi explainer visuals; no creator copying"
+            ),
+            "profile": (
+                get_settings().reel_profile_name
+                if format_key == "reel"
+                else "hindi_explainer"
+            ),
+            "caption_policy": "burned captions required for muted playback",
+            "caption_cues": cues,
+            "approval_required": True,
+            "script_approval_version": None,
+            "assets": {},
+        }
+    except Exception as exc:
+        _mark_generation_failed(job_id, version, "script", exc)
+        raise
+
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if (
+            job is None
+            or job.content_version != version
+            or job.status != "drafting_script"
+            or job.stage != "script"
+        ):
+            raise ValueError("Job changed while its script was being generated")
+        job.script_text = script
+        job.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        job.status = "awaiting_script_approval"
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def approve_script(job_id: str, approver_id: int, expected_version: int) -> ContentJob:
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.content_version != expected_version:
+            raise ValueError("Script approval is stale; review the current version")
+        if job.status != "awaiting_script_approval" or job.stage != "script":
+            raise ValueError("Job script is not awaiting approval")
+        try:
+            metadata = json.loads(job.metadata_json or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("Job script metadata is invalid") from exc
+        metadata["script_approval_version"] = expected_version
+        metadata["script_approved_by"] = approver_id
+        job.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        job.status = "queued"
+        job.stage = "assets"
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(job)
+        return job
+
+
+def generate_assets(job_id: str, expected_version: int) -> ContentJob:
+    """Generate paid assets only for an explicitly approved script version."""
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.content_version != expected_version:
+            raise ValueError("Asset generation request is stale")
+        try:
+            metadata = json.loads(job.metadata_json or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("Job script metadata is invalid") from exc
+        if metadata.get("script_approval_version") != expected_version:
+            raise ValueError("Approve the current script before generating media")
+        if job.status != "queued" or job.stage != "assets":
+            raise ValueError("Job assets are not available for generation")
+        script = job.script_text or ""
+        topic = job.topic
+        storyboard = metadata.get("storyboard") or []
+        format_code = str(metadata.get("format") or "")
+        claim = session.execute(
+            update(ContentJob)
+            .where(
+                ContentJob.id == job_id,
+                ContentJob.content_version == expected_version,
+                ContentJob.status == "queued",
+                ContentJob.stage == "assets",
+            )
+            .values(
+                status="generating_assets",
+                error_message=None,
+                updated_at=datetime.now(timezone.utc),
+            )
         )
+        if claim.rowcount != 1:
+            session.rollback()
+            raise ValueError("Job asset generation is already in progress")
+        session.commit()
+
+    media_root = Path(get_settings().media_root)
+    assets: dict[str, str] = {}
+    audio_plan: dict[str, object] = {}
+    try:
+        assets = create_job_assets(
+            job_id,
+            topic,
+            script,
+            media_root,
+            storyboard=storyboard if isinstance(storyboard, list) else [],
+            thumbnail_prompt=str(metadata.get("thumbnail_prompt") or "") or None,
+        )
+        from .audio_catalog import get_default_audio_asset
+
+        bgm = get_default_audio_asset(media_root, "bgm")
+        if bgm is not None:
+            filename = bgm.get("filename")
+            if isinstance(filename, str) and Path(filename).name == filename:
+                assets["bgm"] = filename
+                audio_plan["bgm_asset_id"] = bgm.get("id")
+                audio_plan["bgm_gain"] = 0.16
         from .provider_credentials import get_provider_for_role, media_generation_enabled
 
         video_provider = get_provider_for_role("video")
@@ -337,7 +478,7 @@ def generate_content(job_id: str) -> ContentJob:
                 f"{video_provider} was selected, but no provider-generated video asset was created."
             )
         if (
-            format_key in {"reel", "short"}
+            format_code in {"instagram_reel", "youtube_short"}
             and media_generation_enabled()
             and voice_provider != "off"
             and "voiceover" not in assets
@@ -345,22 +486,34 @@ def generate_content(job_id: str) -> ContentJob:
             raise RuntimeError(
                 f"{voice_provider} narration was selected, but no voiceover asset was created."
             )
-        if not cues or any(
-            not isinstance(cue.get("text"), str)
-            or not cue["text"].strip()
-            or not cue["text"].strip("0 ").strip()
-            for cue in cues
-            if isinstance(cue, dict)
+    except Exception as exc:
+        _mark_generation_failed(job_id, expected_version, "assets", exc)
+        raise
+
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if (
+            job is None
+            or job.content_version != expected_version
+            or job.status != "generating_assets"
+            or job.stage != "assets"
         ):
-            raise RuntimeError("Caption generation produced invalid or placeholder text.")
-        metadata["assets"] = assets
-        metadata["video_provider"] = video_provider
-        metadata["voice_provider"] = voice_provider
-        job.metadata_json = json.dumps(
-            metadata,
-            ensure_ascii=False,
+            for filename in assets.values():
+                if Path(filename).name == filename:
+                    (media_root / filename).unlink(missing_ok=True)
+            raise ValueError("Job changed while its assets were being generated")
+        current_metadata = json.loads(job.metadata_json or "{}")
+        if current_metadata.get("script_approval_version") != expected_version:
+            raise ValueError("Script approval changed while assets were being generated")
+        current_metadata["assets"] = assets
+        current_metadata["assets_version"] = expected_version
+        current_metadata["video_provider"] = video_provider
+        current_metadata["voice_provider"] = voice_provider
+        current_metadata["audio_plan"] = audio_plan
+        current_metadata["caption_timing_source"] = (
+            "provider_alignment" if "voice_timing" in assets else "estimated"
         )
-        # A connected render worker must render the media before approval.
+        job.metadata_json = json.dumps(current_metadata, ensure_ascii=False)
         job.stage = "render"
         job.status = "queued"
         job.updated_at = datetime.now(timezone.utc)
@@ -374,13 +527,19 @@ def list_jobs(limit: int = 25) -> list[ContentJob]:
         return list(session.scalars(select(ContentJob).order_by(ContentJob.created_at.desc()).limit(limit)))
 
 
-def approve_job(job_id: str, approver_id: int) -> ContentJob:
+def approve_job(
+    job_id: str,
+    approver_id: int,
+    expected_version: int | None = None,
+) -> ContentJob:
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)
         if not job:
             raise ValueError("Job not found")
         if job.status != "awaiting_approval":
             raise ValueError("Job must finish rendering before approval")
+        if expected_version is not None and job.content_version != expected_version:
+            raise ValueError("Video approval is stale; review the current version")
         job.status = "approved"
         job.approval_version = job.content_version
         job.updated_at = datetime.now(timezone.utc)
@@ -397,7 +556,20 @@ def retry_job(job_id: str) -> ContentJob:
         if job.status != "failed":
             raise ValueError("Only failed jobs can be retried")
         job.status = "queued"
-        job.stage = "render" if (job.script_text and job.metadata_json) else "topic"
+        if job.stage == "script":
+            job.stage = "topic"
+        elif job.stage == "assets":
+            try:
+                metadata = json.loads(job.metadata_json or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            job.stage = (
+                "assets"
+                if metadata.get("script_approval_version") == job.content_version
+                else "topic"
+            )
+        else:
+            job.stage = "render" if (job.script_text and job.metadata_json) else "topic"
         job.error_message = None
         job.claimed_by = None
         job.lease_expires_at = None
@@ -408,12 +580,14 @@ def retry_job(job_id: str) -> ContentJob:
         return job
 
 
-def cancel_job(job_id: str) -> ContentJob:
+def cancel_job(job_id: str, expected_version: int | None = None) -> ContentJob:
     """Cancel work that has not been published or is actively rendering."""
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)
         if not job:
             raise ValueError("Job not found")
+        if expected_version is not None and job.content_version != expected_version:
+            raise ValueError("Job cancellation is stale; review the current version")
         if job.status in {"published", "rendering"}:
             raise ValueError("Published or actively rendering jobs cannot be cancelled")
         if job.status == "cancelled":
@@ -429,17 +603,28 @@ def cancel_job(job_id: str) -> ContentJob:
         return job
 
 
-def revise_job(job_id: str) -> ContentJob:
+def revise_job(job_id: str, expected_version: int | None = None) -> ContentJob:
     """Invalidate approval and queue a fresh script/render for operator revision."""
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)
         if not job:
             raise ValueError("Job not found")
+        if expected_version is not None and job.content_version != expected_version:
+            raise ValueError("Script revision is stale; review the current version")
         if job.status in {"published", "rendering", "cancelled"}:
             raise ValueError("This job cannot be revised in its current state")
         job.content_version += 1
         job.approval_version = None
         job.render_path = None
+        if job.metadata_json:
+            try:
+                metadata = json.loads(job.metadata_json)
+            except json.JSONDecodeError:
+                metadata = {}
+            metadata["script_approval_version"] = None
+            metadata["assets"] = {}
+            metadata.pop("assets_version", None)
+            job.metadata_json = json.dumps(metadata, ensure_ascii=False)
         job.status = "queued"
         job.stage = "topic"
         job.error_message = None
@@ -694,6 +879,13 @@ def claim_render_job(worker_id: str) -> ContentJob | None:
         if worker_id != "railway-renderer":
             return None
 
+        dialect_name = session.get_bind().dialect.name
+        if dialect_name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(CAST(:lock_id AS BIGINT))"),
+                {"lock_id": _RENDER_CLAIM_LOCK_ID},
+            )
+
         # Enforce the configured concurrency cap: count live rendering leases.
         from sqlalchemy import func
 
@@ -706,7 +898,7 @@ def claim_render_job(worker_id: str) -> ContentJob | None:
         ) or 0
         if active_rendering >= max(1, get_settings().max_concurrent_jobs):
             return None
-        job = session.scalar(
+        candidate_query = (
             select(ContentJob)
             .where(
                 or_(
@@ -721,6 +913,9 @@ def claim_render_job(worker_id: str) -> ContentJob | None:
             .order_by(ContentJob.created_at.asc())
             .limit(1)
         )
+        if dialect_name == "postgresql":
+            candidate_query = candidate_query.with_for_update(skip_locked=True)
+        job = session.scalar(candidate_query)
         if job is None:
             return None
         job.status = "rendering"

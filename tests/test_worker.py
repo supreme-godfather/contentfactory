@@ -32,6 +32,25 @@ def test_ffmpeg_error_detail_preserves_start_and_end():
     assert len(detail) < 1020
 
 
+def test_render_runtime_checks_required_ffmpeg_filters(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from worker.worker import _validate_render_runtime
+
+    monkeypatch.setattr(Path, "is_file", lambda _self: True)
+    with patch("worker.worker.shutil.which", side_effect=["ffmpeg", "ffprobe"]), patch(
+        "worker.worker.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ) as run:
+        _validate_render_runtime()
+
+    assert [call.args[0][-1] for call in run.call_args_list] == [
+        "filter=ass",
+        "filter=sidechaincompress",
+        "filter=loudnorm",
+    ]
+
+
 def test_factory_url_accepts_railway_https():
     from worker.worker import _validate_factory_url
 
@@ -90,7 +109,7 @@ def test_caption_timing_falls_back_to_topic():
     assert result == [("topic", 0.0, 55.0)]
 
 
-def test_render_video_uses_input_dimensions_for_caption_box(tmp_path, monkeypatch):
+def test_render_video_uses_global_ass_captions_at_1080x1920(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import patch
     from worker.worker import render_video
@@ -118,18 +137,23 @@ def test_render_video_uses_input_dimensions_for_caption_box(tmp_path, monkeypatc
     commands = [call.args[0] for call in run.call_args_list]
     scene_command = next(command for command in commands if "-vf" in command)
     video_filter = scene_command[scene_command.index("-vf") + 1]
-    assert "drawbox=x=30:y=ih-300:w=iw-60:h=220" in video_filter
-    assert "scale=780:1386" in video_filter
+    assert "drawtext" not in video_filter
+    assert "scale=1170:2079" in video_filter
+    assert "crop=1080:1920" in video_filter
     assert scene_command[scene_command.index("-loglevel") + 1] == "error"
     assert "-nostats" in scene_command
     assert scene_command[scene_command.index("-filter_threads") + 1] == "1"
     assert scene_command[scene_command.index("-threads") + 1] == "1"
     assert scene_command[scene_command.index("-preset") + 1] == "ultrafast"
-    assert len(list(tmp_path.glob("job-id-scene-*.png"))) == 4
-    assert len(list(tmp_path.glob("job-id-segment-*.mp4"))) == 4
+    assert len(list(tmp_path.glob("job-id-scene-*.png"))) == 6
+    assert len(list(tmp_path.glob("job-id-segment-*.mp4"))) == 6
     concat_command = next(command for command in commands if "-f" in command and "concat" in command)
-    assert concat_command[concat_command.index("-c:v") + 1] == "copy"
+    assert "ass=filename=" in concat_command[concat_command.index("-filter_complex") + 1]
+    assert concat_command[concat_command.index("-c:v") + 1] == "libx264"
     assert "-an" in concat_command
+    ass_text = (tmp_path / "job-id-captions.ass").read_text(encoding="utf-8")
+    assert "Noto Sans Devanagari" in ass_text
+    assert r"\kf" in ass_text
 
 
 def test_render_video_uses_all_six_generated_scene_images(tmp_path):
@@ -187,6 +211,37 @@ def test_render_video_rejects_incomplete_generated_scene_set(tmp_path):
             )
 
 
+def test_render_video_accepts_six_mixed_image_and_video_scenes(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from worker.worker import render_video
+
+    scene_assets = []
+    for index in range(6):
+        path = tmp_path / f"scene-{index}.{'mp4' if index in {0, 4} else 'png'}"
+        path.write_bytes(b"asset")
+        scene_assets.append((path, index in {0, 4}))
+
+    def fake_run(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"x" * 2048)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    with patch("worker.worker.shutil.which", side_effect=["ffmpeg", None]), patch(
+        "worker.worker.subprocess.run", side_effect=fake_run
+    ) as run:
+        render_video(
+            {"id": "job-id", "topic": "topic", "script": "six scene test"},
+            tmp_path,
+            scene_assets=scene_assets,
+        )
+
+    scene_commands = [call.args[0] for call in run.call_args_list if "-vf" in call.args[0]]
+    assert len(scene_commands) == 6
+    assert "-stream_loop" in scene_commands[0]
+    assert "-stream_loop" not in scene_commands[1]
+    assert "-stream_loop" in scene_commands[4]
+
+
 def test_render_video_reports_empty_output(tmp_path):
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -232,8 +287,8 @@ def test_render_video_maps_generated_voiceover(tmp_path, monkeypatch):
         )
 
     command = next(call.args[0] for call in run.call_args_list if "-map" in call.args[0])
-    assert command[command.index("-map") + 1] == "0:v:0"
-    audio_map = command.index("1:a:0")
+    assert command[command.index("-map") + 1] == "[v]"
+    audio_map = command.index("[a]")
     assert command[audio_map - 1] == "-map"
     assert "-c:a" in command
     assert "-an" not in command
@@ -258,13 +313,69 @@ def test_render_video_rejects_missing_narration_track(tmp_path):
     with patch("worker.worker.shutil.which", side_effect=["ffmpeg", "ffprobe"]), patch(
         "worker.worker._audio_duration", return_value=None
     ), patch("worker.worker.subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="without the required narration audio track"):
+        with pytest.raises(RuntimeError, match="without the required audio track"):
             render_video(
                 {"id": "job-id", "topic": "Cybersecurity", "script": "Use unique passwords"},
                 tmp_path,
                 image_path=image,
                 audio_path=voiceover,
             )
+
+
+def test_ass_caption_escapes_override_syntax(tmp_path):
+    from worker.worker import _write_ass_file
+
+    path = _write_ass_file(
+        {
+            "id": "ass-job",
+            "topic": "topic",
+            "caption_cues": [
+                {"text": r"{danger} path\value", "start_seconds": 0, "end_seconds": 2},
+            ],
+        },
+        2,
+        tmp_path,
+    )
+    text = path.read_text(encoding="utf-8")
+    assert r"\{danger\}" in text
+    assert r"path\\value" in text
+    assert r"\kf" in text
+
+
+def test_render_video_ducks_real_bgm_without_synthetic_noise(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from worker.worker import render_video
+
+    image = tmp_path / "input.png"
+    image.write_bytes(b"image")
+    voiceover = tmp_path / "voiceover.mp3"
+    voiceover.write_bytes(b"audio")
+    bgm = tmp_path / "bgm.mp3"
+    bgm.write_bytes(b"music")
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "ffprobe":
+            return SimpleNamespace(returncode=0, stdout="audio\n", stderr="")
+        Path(command[-1]).write_bytes(b"x" * 2048)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with patch("worker.worker.shutil.which", side_effect=["ffmpeg", "ffprobe"]), patch(
+        "worker.worker._audio_duration", return_value=None
+    ), patch("worker.worker.subprocess.run", side_effect=fake_run) as run:
+        render_video(
+            {"id": "job-id", "topic": "topic", "script": "A useful narration"},
+            tmp_path,
+            image_path=image,
+            audio_path=voiceover,
+            bgm_path=bgm,
+        )
+
+    command = next(call.args[0] for call in run.call_args_list if "-filter_complex" in call.args[0])
+    filtergraph = command[command.index("-filter_complex") + 1]
+    assert "sidechaincompress" in filtergraph
+    assert "alimiter" in filtergraph
+    assert "anoisesrc" not in " ".join(command)
 
 
 def test_storyboard_images_are_cybersecurity_illustrations(tmp_path):
@@ -280,7 +391,7 @@ def test_storyboard_images_are_cybersecurity_illustrations(tmp_path):
         tmp_path,
     )
 
-    assert len(images) == 4
+    assert len(images) == 6
     for path in images:
         with Image.open(path) as image:
             assert image.size == (720, 1280)

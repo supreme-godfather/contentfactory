@@ -32,8 +32,6 @@ def validate_content(*, topic: str, script: str | None, metadata_json: str | Non
     warnings: list[str] = []
     if not topic.strip():
         blockers.append("missing_topic")
-    if not script or len(script.strip()) < 80:
-        blockers.append("script_too_short")
 
     metadata: dict[str, object] | None = None
     if not metadata_json:
@@ -47,6 +45,11 @@ def validate_content(*, topic: str, script: str | None, metadata_json: str | Non
         except json.JSONDecodeError:
             blockers.append("invalid_metadata")
 
+    is_clip = bool(metadata and metadata.get("content_type") == "clip")
+    minimum_script_chars = 20 if is_clip else 80
+    if not script or len(script.strip()) < minimum_script_chars:
+        blockers.append("script_too_short")
+
     if metadata is not None:
         title = str(metadata.get("title") or "")
         if title and len(title) > YOUTUBE_TITLE_MAX_CHARS:
@@ -59,8 +62,12 @@ def validate_content(*, topic: str, script: str | None, metadata_json: str | Non
             warnings.append("missing_ai_disclosure")
         if not metadata.get("caption_cues"):
             warnings.append("missing_caption_cues")
+        if metadata.get("voice_provider") not in {None, "off"} and metadata.get(
+            "caption_timing_source"
+        ) != "provider_alignment":
+            warnings.append("estimated_caption_timing")
 
-    if script and len(script.strip()) >= 80:
+    if script and len(script.strip()) >= minimum_script_chars and not is_clip:
         structure = script_structure(script)
         if not structure["has_hook"]:
             warnings.append("weak_hook")

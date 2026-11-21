@@ -23,9 +23,14 @@ def isolated_database(monkeypatch):
     from app.config import get_settings
     from app.telegram import (
         _pending_elevenlabs_voice_id,
+        _pending_fish_audio_reference_id,
         _pending_huggingface_image_endpoint,
+        _pending_minimax_voice_id,
         _pending_instagram_id,
         _pending_account_name,
+        _pending_audio_upload,
+        _pending_clip_source,
+        _pending_icon_slot,
         _pending_custom_creator,
         _pending_custom_part_count,
         _unauthorized_notice_times,
@@ -35,9 +40,14 @@ def isolated_database(monkeypatch):
     _unauthorized_notice_times.clear()
     _pending_instagram_id.clear()
     _pending_account_name.clear()
+    _pending_audio_upload.clear()
+    _pending_clip_source.clear()
+    _pending_icon_slot.clear()
     _pending_custom_creator.clear()
     _pending_custom_part_count.clear()
     _pending_elevenlabs_voice_id.clear()
+    _pending_fish_audio_reference_id.clear()
+    _pending_minimax_voice_id.clear()
     _pending_huggingface_image_endpoint.clear()
     import app.db
     from app.db import Base, engine, init_db
@@ -364,6 +374,26 @@ class TestKeyboards:
         last_row = kb["inline_keyboard"][3]
         texts = [btn["text"] for btn in last_row]
         assert any("Pause" in t for t in texts)
+
+    def test_controls_exposes_audio_library(self):
+        from app.telegram import _controls_keyboard
+
+        callbacks = [
+            button["callback_data"]
+            for row in _controls_keyboard()["inline_keyboard"]
+            for button in row
+        ]
+        assert "audio_catalog" in callbacks
+
+    def test_studio_exposes_clipping_engine(self):
+        from app.telegram import _studio_keyboard
+
+        callbacks = [
+            button["callback_data"]
+            for row in _studio_keyboard()["inline_keyboard"]
+            for button in row
+        ]
+        assert "clip_studio" in callbacks
 
     def test_job_keyboard_has_actions(self):
         from app.telegram import _job_keyboard
@@ -829,6 +859,7 @@ class TestMessageBuilders:
         assert "provider_role:script" in callbacks
         assert "provider_role:image" in callbacks
         assert "provider_role:voice" in callbacks
+        assert "provider_role:video" in callbacks
         assert "video_pipeline" in callbacks
 
     def test_video_renderer_offers_only_railway_worker(self, monkeypatch):
@@ -993,6 +1024,7 @@ class TestMessageBuilders:
             tmp_path,
             generate_image=False,
             generate_voice=True,
+            image_prompt=None,
         )
 
     def test_huggingface_image_endpoint_rejects_non_endpoint_urls(self):
@@ -1206,13 +1238,21 @@ class TestMessageBuilders:
         assert run.call_args.kwargs.get("shell", False) is False
 
     def test_elevenlabs_voice_route_uses_configured_voice_id(self, tmp_path):
+        import base64
         import httpx
 
         from app.google_media import generate_elevenlabs_voiceover
 
         response = httpx.Response(
             200,
-            content=b"audio",
+            json={
+                "audio_base64": base64.b64encode(b"audio").decode("ascii"),
+                "normalized_alignment": {
+                    "characters": list("हिंदी आवाज"),
+                    "character_start_times_seconds": [index * 0.1 for index in range(10)],
+                    "character_end_times_seconds": [(index + 1) * 0.1 for index in range(10)],
+                },
+            },
             request=httpx.Request("POST", "https://api.elevenlabs.io"),
         )
         destination = tmp_path / "voice.mp3"
@@ -1224,9 +1264,10 @@ class TestMessageBuilders:
             generate_elevenlabs_voiceover("हिंदी स्क्रिप्ट", destination)
 
         assert destination.read_bytes() == b"audio"
-        assert request.call_args.args[0].endswith("/text-to-speech/voice_123")
+        assert request.call_args.args[0].endswith("/text-to-speech/voice_123/with-timestamps")
         assert request.call_args.kwargs["headers"]["xi-api-key"] == "secret-key"
         assert request.call_args.kwargs["json"]["model_id"] == "eleven_multilingual_v2"
+        assert destination.with_suffix(".timing.json").is_file()
 
     def test_no_paid_mode_ui_is_visible(self):
         from app.telegram import _provider_keyboard, _provider_message, _provider_role_keyboard
@@ -1244,6 +1285,11 @@ class TestMessageBuilders:
             for button in row
         ]
         assert "elevenlabs_voice_id" in voice_callbacks
+        assert "fish_audio_reference_id" in voice_callbacks
+        assert "fish_audio_model" in voice_callbacks
+        assert "minimax_voice_id" in voice_callbacks
+        assert "minimax_speech_model" in voice_callbacks
+        assert "voice_benchmark" in voice_callbacks
 
     @pytest.mark.asyncio
     async def test_elevenlabs_voice_id_prompt_saves_configured_id(self):
@@ -1262,6 +1308,24 @@ class TestMessageBuilders:
         assert get_elevenlabs_voice_id() == "voice_123"
         assert CHAT_ID not in _pending_elevenlabs_voice_id
         assert "voice ID saved" in mock_send.call_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_fish_audio_reference_prompt_saves_configured_id(self):
+        from app.provider_credentials import get_fish_audio_reference_id
+        from app.telegram import handle_update, _pending_fish_audio_reference_id
+
+        with (
+            patch("app.telegram.send_message", new_callable=AsyncMock),
+            patch("app.telegram.answer_callback", new_callable=AsyncMock),
+        ):
+            await handle_update(_callback_update("fish_audio_reference_id"))
+        assert CHAT_ID in _pending_fish_audio_reference_id
+
+        with patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send:
+            await handle_update(_text_update("fish_voice_123"))
+        assert get_fish_audio_reference_id() == "fish_voice_123"
+        assert CHAT_ID not in _pending_fish_audio_reference_id
+        assert "reference voice saved" in mock_send.call_args.args[1]
 
     @pytest.mark.asyncio
     async def test_paid_provider_toggle_requires_confirmation(self):
@@ -1328,6 +1392,7 @@ class TestMessageBuilders:
             tmp_path,
             generate_image=True,
             generate_voice=False,
+            image_prompt=None,
         )
 
     def test_image_generation_does_not_fail_over_on_permission_error(self, tmp_path):
@@ -1525,12 +1590,35 @@ class TestHandleUpdate:
             await handle_update(_text_update("/generate भारत का इतिहास", update_id=40))
             mock_send.assert_called_once()
             text = mock_send.call_args[0][1]
-            assert "Preview created" in text
+            assert "Script review" in text
+            assert "No voice, image, video, music, or rendering credits" in text
             assert "भारत का इतिहास" in text
-            assert "Pending worker claim" in text
-            assert "does not show live render progress" in text
+            assert "Approve this exact version" in text
             assert "40%" not in text
             assert list_jobs()[0].platform == "both"
+            assert list_jobs()[0].status == "awaiting_script_approval"
+
+    @pytest.mark.asyncio
+    async def test_clip_studio_accepts_vod_url(self, monkeypatch):
+        from cryptography.fernet import Fernet
+        from app.config import get_settings
+        from app.clipping import list_clip_jobs
+        from app.telegram import handle_update, _pending_clip_source
+
+        monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+        get_settings.cache_clear()
+        with (
+            patch("app.telegram.send_message", new_callable=AsyncMock),
+            patch("app.telegram.answer_callback", new_callable=AsyncMock),
+        ):
+            await handle_update(_callback_update("clip_new:vod"))
+        assert _pending_clip_source[CHAT_ID] == ("vod", None)
+
+        with patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send:
+            await handle_update(_text_update("https://video.example/watch?v=123", update_id=88))
+        assert CHAT_ID not in _pending_clip_source
+        assert list_clip_jobs()[0].source_kind == "vod"
+        assert "Clip job queued" in mock_send.call_args.args[1]
 
     @pytest.mark.asyncio
     async def test_generate_same_topic_with_new_updates_creates_new_jobs(self):

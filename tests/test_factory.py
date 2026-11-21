@@ -8,8 +8,7 @@ from starlette.datastructures import Headers
 
 
 @pytest.fixture(autouse=True)
-def isolated_database(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+def isolated_database(monkeypatch):
     monkeypatch.setenv("APP_PAUSED", "true")
     monkeypatch.setenv("MOCK_PUBLISHING", "true")
     from app.config import get_settings
@@ -52,6 +51,7 @@ def test_only_railway_render_worker_can_claim_jobs():
     assert claimed is not None
     assert claimed.id == job.id
     assert claimed.claimed_by == "railway-renderer"
+    assert claim_render_job("railway-renderer") is None
 
 
 def test_auto_render_target_is_persisted_as_railway_only():

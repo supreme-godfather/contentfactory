@@ -14,6 +14,7 @@ from google.oauth2 import service_account
 
 from .config import get_settings
 from .provider_credentials import get_provider_secret
+from .voice_providers import generate_fish_audio_voiceover, generate_minimax_voiceover
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ def generate_edge_tts_voiceover(text: str, destination: Path) -> None:
 
 
 def generate_elevenlabs_voiceover(text: str, destination: Path) -> None:
+    from .captions import character_alignment_to_words, words_to_caption_cues
     from .provider_credentials import get_elevenlabs_voice_id
 
     api_key = get_provider_secret("elevenlabs")
@@ -98,7 +100,7 @@ def generate_elevenlabs_voiceover(text: str, destination: Path) -> None:
     if not api_key or not voice_id:
         raise RuntimeError("ElevenLabs API key and voice ID must both be configured.")
     response = httpx.post(
-        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps",
         headers={"xi-api-key": api_key, "Content-Type": "application/json"},
         params={"output_format": "mp3_44100_128"},
         json={
@@ -108,9 +110,29 @@ def generate_elevenlabs_voiceover(text: str, destination: Path) -> None:
         timeout=180,
     )
     response.raise_for_status()
-    if not response.content:
-        raise RuntimeError("ElevenLabs returned an empty audio response.")
-    destination.write_bytes(response.content)
+    payload = response.json()
+    encoded_audio = payload.get("audio_base64")
+    if not isinstance(encoded_audio, str) or not encoded_audio:
+        raise RuntimeError("ElevenLabs returned no timestamped audio.")
+    destination.write_bytes(base64.b64decode(encoded_audio))
+    alignment = payload.get("normalized_alignment") or payload.get("alignment") or {}
+    characters = alignment.get("characters") or []
+    starts = alignment.get("character_start_times_seconds") or []
+    ends = alignment.get("character_end_times_seconds") or []
+    if characters and starts and ends:
+        words = character_alignment_to_words(characters, starts, ends)
+        cues = words_to_caption_cues(words)
+        destination.with_suffix(".timing.json").write_text(
+            json.dumps(
+                {
+                    "provider": "elevenlabs",
+                    "timing_source": "provider_alignment",
+                    "caption_cues": cues,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
 
 def generate_image(prompt: str, destination: Path) -> None:
@@ -397,8 +419,12 @@ def create_job_assets(
         if _generate_role_asset("image", job_id, topic, script, image):
             assets["image"] = image.name
     voiceover = media_root / f"{job_id}-voiceover.mp3"
+    voiceover.with_suffix(".timing.json").unlink(missing_ok=True)
     if _generate_role_asset("voice", job_id, topic, script, voiceover):
         assets["voiceover"] = voiceover.name
+        timing = voiceover.with_suffix(".timing.json")
+        if timing.is_file():
+            assets["voice_timing"] = timing.name
     if thumbnail_prompt:
         thumbnail = media_root / f"{job_id}-thumbnail.png"
         if _generate_role_asset(
@@ -438,6 +464,8 @@ def _huggingface_scene_prompts(
             f"Scene beat: {scene.get('stage', f'scene {index + 1}')}. "
             f"Visual direction: {direction}. Narration context: {narration[:500]}. "
             "Make this scene visually distinct and specific to the narration. "
+            "Use a smooth slow push-in or lateral tracking shot, strong subject hierarchy, "
+            "high retention composition, and a single clear visual reveal instead of a montage. "
             "Premium editorial photography, natural dramatic lighting, coherent realistic details, "
             "deep charcoal shadows with restrained muted-gold accents, clear focal subject, "
             "leave lower 20 percent uncluttered for subtitles. No text, letters, logos, watermarks, "
@@ -476,13 +504,23 @@ def _generate_role_asset(
                     destination.parent,
                     generate_image=role == "image",
                     generate_voice=role == "voice",
+                    image_prompt=prompt_override,
                 )
                 if not assets:
                     return False
+            elif provider == "huggingface" and role == "image":
+                generate_huggingface_image(
+                    prompt_override or _image_prompt(topic),
+                    destination,
+                )
             elif provider == "edge_tts" and role == "voice":
                 generate_edge_tts_voiceover(script, destination)
             elif provider == "elevenlabs" and role == "voice":
                 generate_elevenlabs_voiceover(script, destination)
+            elif provider == "fish_audio" and role == "voice":
+                generate_fish_audio_voiceover(script, destination)
+            elif provider == "minimax" and role == "voice":
+                generate_minimax_voiceover(script, destination)
             elif provider == "off":
                 return False
             else:

@@ -4,7 +4,7 @@ import logging
 import time
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, event
+from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -143,6 +143,51 @@ class PublicationRecord(Base):
     remote_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class ClipJob(Base):
+    __tablename__ = "clip_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    source_url_encrypted: Mapped[str] = mapped_column(Text)
+    source_display: Mapped[str] = mapped_column(String(500))
+    source_kind: Mapped[str] = mapped_column(String(20), index=True)
+    capture_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", index=True)
+    stage: Mapped[str] = mapped_column(String(40), default="ingest")
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class ClipCandidate(Base):
+    __tablename__ = "clip_candidates"
+    __table_args__ = (UniqueConstraint("job_id", "rank", name="uq_clip_candidate_job_rank"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    rank: Mapped[int] = mapped_column(Integer)
+    start_ms: Mapped[int] = mapped_column(Integer)
+    end_ms: Mapped[int] = mapped_column(Integer)
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(200))
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    transcript_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    render_filename: Mapped[str] = mapped_column(String(240))
+    youtube_thumbnail_filename: Mapped[str] = mapped_column(String(240))
+    instagram_thumbnail_filename: Mapped[str] = mapped_column(String(240))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30), default="awaiting_review", index=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 settings = get_settings()

@@ -66,6 +66,11 @@ PROVIDER_INFO: dict[str, dict[str, object]] = {
         "secret_label": "ElevenLabs API key",
         "wired": True,
     },
+    "fish_audio": {
+        "label": "🐟 Fish Audio Text to Speech",
+        "secret_label": "Fish Audio API key",
+        "wired": True,
+    },
     "higgsfield": {
         "label": "🎬 Higgsfield",
         "secret_label": "Higgsfield API key (Key ID:Key Secret)",
@@ -113,6 +118,8 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
         "google": "Google Text-to-Speech",
         "edge_tts": "Microsoft Edge TTS (online)",
         "elevenlabs": "ElevenLabs (credit-based)",
+        "fish_audio": "Fish Audio S2.1 Pro",
+        "minimax": "MiniMax Speech 2.8",
         "openai": "OpenAI Text-to-Speech",
         "off": "No AI narration",
     },
@@ -179,13 +186,17 @@ def provider_status() -> dict[str, object]:
     for name, is_configured in configured.items():
         status[name] = is_configured
         cooldown = provider_cooldown_until(name) if name in {
-            "google", "openai", "gemini", "huggingface", "elevenlabs",
+            "google", "openai", "gemini", "huggingface", "elevenlabs", "fish_audio",
             "minimax", "minimax_mplan", "higgsfield"
         } else None
         status[f"{name}_cooldown_until"] = cooldown.isoformat() if cooldown else None
     # Google can also be configured purely through environment variables.
     status["google"] = bool(configured["google"] or settings.google_service_account_json)
     status["elevenlabs_voice_id"] = bool(get_elevenlabs_voice_id())
+    status["fish_audio_reference_id"] = bool(get_fish_audio_reference_id())
+    status["fish_audio_model_id"] = get_fish_audio_model_id()
+    status["minimax_voice_id"] = bool(get_minimax_voice_id())
+    status["minimax_speech_model"] = get_minimax_speech_model()
     status["huggingface_image_endpoint"] = bool(get_huggingface_image_endpoint())
     status["minimax"] = bool(configured["minimax"] or settings.minimax_api_key)
     status["minimax_mplan"] = bool(configured["minimax_mplan"])
@@ -251,7 +262,7 @@ def is_provider_quota_error(error: Exception) -> bool:
 
 
 def mark_provider_quota_error(provider: str, error: Exception) -> datetime:
-    if provider not in {"google", "openai", "gemini", "huggingface", "elevenlabs", "minimax", "higgsfield"}:
+    if provider not in {"google", "openai", "gemini", "huggingface", "elevenlabs", "fish_audio", "minimax", "higgsfield"}:
         raise ValueError("Unsupported wired provider")
     retry_after = PROVIDER_COOLDOWN_DEFAULT_SECONDS
     if isinstance(error, httpx.HTTPStatusError):
@@ -327,6 +338,13 @@ def provider_candidates_for_role(role: str) -> list[str]:
         if provider_cooldown_until(primary) is not None:
             return []
         return [primary]
+    if primary == "fish_audio":
+        status = provider_status()
+        if not status.get("fish_audio") or not get_fish_audio_reference_id():
+            return []
+        if provider_cooldown_until(primary) is not None:
+            return []
+        return [primary]
     if primary == "huggingface":
         status = provider_status()
         if not status.get("huggingface"):
@@ -339,6 +357,8 @@ def provider_candidates_for_role(role: str) -> list[str]:
     if primary == "minimax":
         status = provider_status()
         if not status.get("minimax"):
+            return []
+        if role == "voice" and not get_minimax_voice_id():
             return []
         if provider_cooldown_until(primary) is not None:
             return []
@@ -446,6 +466,83 @@ def set_elevenlabs_voice_id(voice_id: str) -> None:
         else:
             setting.value = value
         session.commit()
+
+
+FISH_AUDIO_MODELS = ("s2.1-pro", "s2.1-pro-free", "s2-pro", "drama-3", "s3-pro")
+MINIMAX_SPEECH_MODELS = ("speech-2.8-turbo", "speech-2.8-hd")
+
+
+def _get_factory_setting(key: str, default: str = "") -> str:
+    with SessionLocal() as session:
+        setting = session.get(FactorySetting, key)
+        return setting.value.strip() if setting and setting.value else default
+
+
+def _set_factory_setting(key: str, value: str) -> None:
+    with SessionLocal() as session:
+        setting = session.get(FactorySetting, key)
+        if setting is None:
+            session.add(FactorySetting(key=key, value=value))
+        else:
+            setting.value = value
+        session.commit()
+
+
+def _validate_voice_identifier(value: str, label: str) -> str:
+    clean = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", clean):
+        raise ValueError(
+            f"{label} must contain only letters, numbers, underscores, or hyphens."
+        )
+    return clean
+
+
+def get_fish_audio_reference_id() -> str:
+    return _get_factory_setting("fish_audio_reference_id")
+
+
+def set_fish_audio_reference_id(reference_id: str) -> None:
+    _set_factory_setting(
+        "fish_audio_reference_id",
+        _validate_voice_identifier(reference_id, "Reference ID"),
+    )
+
+
+def get_fish_audio_model_id() -> str:
+    value = _get_factory_setting("fish_audio_model_id", "s2.1-pro")
+    return value if value in FISH_AUDIO_MODELS else "s2.1-pro"
+
+
+def set_fish_audio_model_id(model_id: str) -> None:
+    value = model_id.strip()
+    if value not in FISH_AUDIO_MODELS:
+        raise ValueError("Unsupported Fish Audio model.")
+    _set_factory_setting("fish_audio_model_id", value)
+
+
+def get_minimax_voice_id() -> str:
+    return _get_factory_setting("minimax_voice_id")
+
+
+def set_minimax_voice_id(voice_id: str) -> None:
+    _set_factory_setting(
+        "minimax_voice_id",
+        _validate_voice_identifier(voice_id, "Voice ID"),
+    )
+
+
+def get_minimax_speech_model() -> str:
+    value = _get_factory_setting("minimax_speech_model", "speech-2.8-turbo")
+    return value if value in MINIMAX_SPEECH_MODELS else "speech-2.8-turbo"
+
+
+def set_minimax_speech_model(model_id: str) -> None:
+    value = model_id.strip()
+    if value not in MINIMAX_SPEECH_MODELS:
+        raise ValueError("Unsupported MiniMax speech model.")
+    _set_factory_setting("minimax_speech_model", value)
+
+
 
 
 def no_paid_providers_enabled() -> bool:

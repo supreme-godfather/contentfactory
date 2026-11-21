@@ -14,10 +14,13 @@ class Settings(BaseSettings):
     worker_token: str = ""
     worker_poll_seconds: int = 30
     worker_lease_seconds: int = 900
+    clip_worker_lease_seconds: int = 2700
+    max_clip_source_mb: int = 1024
+    max_clip_capture_seconds: int = 1800
     telegram_bot_token: str = ""
     telegram_mode: Literal["webhook", "polling"] = "webhook"
     telegram_webhook_secret: str = ""
-    telegram_owner_ids: str = "1112018699"
+    telegram_owner_ids: str = ""
     telegram_language: str = "english"
     youtube_enabled: bool = False
     youtube_client_id: str = ""

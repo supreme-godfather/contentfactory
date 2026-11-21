@@ -67,15 +67,15 @@ Run the installer from the extracted project directory:
 sudo bash deploy-oracle-vps.sh
 ```
 
-Enter the Telegram BotFather token at the hidden prompt. Do not paste it into a
-command, a file you upload, or a chat. The installer stores it in a
+Enter the Telegram BotFather token at the hidden prompt and the trusted numeric
+Telegram owner ID (or comma-separated IDs) at the following prompt. Do not put
+the bot token in a command, a file you upload, or a chat. The installer stores it in a
 root-readable-only environment file, generates separate random API and worker
 credentials, installs FFmpeg and Python dependencies, and enables two
 systemd services. It does not print the token or generated credentials.
 
-The bot should respond to `/start` after the API starts. The configured
-Telegram owner ID is `1112018699`, matching the existing factory
-configuration.
+The bot should respond to `/start` for the configured owner after the API
+starts. Other users and group chats remain ignored.
 
 ## Operations and recovery
 

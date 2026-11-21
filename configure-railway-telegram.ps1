@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = $PSScriptRoot
-$projectId = "75733d46-5731-49e9-b47e-cf870f606127"
+$projectId = "50d40dd6-0ca9-40ea-8f4a-316cafb5ad51"
 $environment = "production"
 $serviceName = "contentfactory"
 $railwayCmd = Get-Command railway.cmd -ErrorAction SilentlyContinue

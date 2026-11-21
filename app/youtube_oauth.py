@@ -35,7 +35,9 @@ def _redirect_uri() -> str:
 
 
 def _sign(value: str) -> str:
-    secret = get_settings().token_encryption_key.encode("utf-8")
+    settings = get_settings()
+    _fernet()
+    secret = settings.token_encryption_key.strip().encode("ascii")
     digest = hmac.new(secret, value.encode("utf-8"), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 

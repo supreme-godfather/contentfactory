@@ -57,6 +57,40 @@ def test_fernet_key_whitespace_is_normalized(monkeypatch):
     assert cipher.decrypt(encrypted) == b"test"
 
 
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        (None, "not configured"),
+        ("", "not configured"),
+        ("   ", "not configured"),
+        ("not-a-fernet-key", "not a valid Fernet key"),
+    ],
+)
+def test_oauth_state_signing_rejects_unusable_encryption_key(monkeypatch, key, message):
+    if key is None:
+        monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
+    else:
+        monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", key)
+    get_settings.cache_clear()
+
+    from app.youtube_oauth import _sign
+
+    with pytest.raises(RuntimeError, match=message):
+        _sign("state-value")
+
+
+def test_unconfigured_youtube_does_not_require_encryption_key(monkeypatch):
+    monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("YOUTUBE_ENABLED", "false")
+    monkeypatch.setenv("YOUTUBE_CLIENT_ID", "")
+    monkeypatch.setenv("YOUTUBE_CLIENT_SECRET", "")
+    get_settings.cache_clear()
+
+    from app.encryption import validate_youtube_encryption_configuration
+
+    validate_youtube_encryption_configuration()
+
+
 def test_disconnect_removes_saved_authorization_and_revokes_google_access():
     from app.youtube_oauth import _fernet, connection_status, disconnect_authorization
 

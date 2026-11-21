@@ -174,7 +174,7 @@ class YouTubePublisher(Publisher):
             response = client.get(
                 "https://www.googleapis.com/youtube/v3/videos",
                 params={"part": "processingDetails", "id": video_id},
-                headers={"Authorization": f"******"},
+                headers={"Authorization": f"Bearer {token}"},
             )
             response.raise_for_status()
             items = response.json().get("items") or []
@@ -195,7 +195,7 @@ class YouTubePublisher(Publisher):
             "https://www.googleapis.com/upload/youtube/v3/thumbnails/set",
             params={"videoId": video_id, "uploadType": "media"},
             headers={
-                "Authorization": f"******",
+                "Authorization": f"Bearer {token}",
                 "Content-Type": "image/jpeg",
             },
             content=thumbnail_path.read_bytes(),

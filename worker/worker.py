@@ -62,6 +62,94 @@ def _caption_timing(job: dict, duration: float) -> list[tuple[str, float, float]
     ]
 
 
+def _ass_timestamp(seconds: float) -> str:
+    centiseconds = max(0, round(seconds * 100))
+    hours, remainder = divmod(centiseconds, 360000)
+    minutes, remainder = divmod(remainder, 6000)
+    whole_seconds, fraction = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{fraction:02d}"
+
+
+def _ass_escape_text(value: str) -> str:
+    return (
+        value.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\r", " ")
+        .replace("\n", r"\N")
+    )
+
+
+def _ass_karaoke_text(text: str, duration: float) -> str:
+    words = [word for word in text.split() if word]
+    if not words:
+        return ""
+    total = max(len(words), round(max(0.1, duration) * 100))
+    base, remainder = divmod(total, len(words))
+    parts = []
+    for index, word in enumerate(words):
+        word_duration = base + (1 if index < remainder else 0)
+        parts.append(f"{{\\kf{max(1, word_duration)}}}{_ass_escape_text(word)}")
+    return " ".join(parts)
+
+
+def _write_ass_file(job: dict, duration: float, output_dir: Path) -> Path:
+    ass_path = output_dir / f"{job['id']}-captions.ass"
+    events = []
+    for text, start, end in _caption_timing(job, duration):
+        if end <= start:
+            continue
+        events.append(
+            "Dialogue: 0,"
+            f"{_ass_timestamp(start)},{_ass_timestamp(end)},Default,,0,0,0,,"
+            f"{{\\fad(80,80)}}{_ass_karaoke_text(text, end - start)}"
+        )
+    if not events:
+        raise RuntimeError("No valid captions were available for ASS rendering.")
+    ass_path.write_text(
+        "\n".join(
+            [
+                "[Script Info]",
+                "ScriptType: v4.00+",
+                "PlayResX: 1080",
+                "PlayResY: 1920",
+                "WrapStyle: 2",
+                "ScaledBorderAndShadow: yes",
+                "YCbCr Matrix: TV.709",
+                "",
+                "[V4+ Styles]",
+                "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
+                "Style: Default,Noto Sans Devanagari,64,&H00FFFFFF,&H0000D7FF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,5,1,2,80,180,420,1",
+                "",
+                "[Events]",
+                "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
+                *events,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return ass_path
+
+
+def _scene_durations(job: dict, duration: float, scene_count: int) -> list[float]:
+    storyboard = job.get("storyboard")
+    raw = []
+    if isinstance(storyboard, list) and len(storyboard) == scene_count:
+        for scene in storyboard:
+            try:
+                raw.append(max(0.1, float(scene.get("duration_seconds", 0))))
+            except (AttributeError, TypeError, ValueError):
+                raw = []
+                break
+    if not raw:
+        return [duration / scene_count] * scene_count
+    scale = duration / sum(raw)
+    values = [item * scale for item in raw]
+    values[-1] += duration - sum(values)
+    return values
+
+
 def _audio_duration(ffprobe: str | None, audio_path: Path | None) -> float | None:
     if not ffprobe or not audio_path or not audio_path.is_file():
         return None
@@ -98,7 +186,12 @@ def _has_audio_stream(ffprobe: str, video_path: Path) -> bool:
 
 
 def _filter_path(value: Path) -> str:
-    return str(value.resolve()).replace("\\", "/").replace(":", r"\:")
+    return (
+        str(value.resolve())
+        .replace("\\", "/")
+        .replace(":", r"\:")
+        .replace("'", r"\'")
+    )
 
 
 def _ffmpeg_error_detail(stderr: str) -> str:
@@ -106,6 +199,29 @@ def _ffmpeg_error_detail(stderr: str) -> str:
     if len(detail) > 1000:
         return f"{detail[:700]} ... {detail[-300:]}"
     return detail
+
+
+def _validate_render_runtime() -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        raise RuntimeError("FFmpeg and FFprobe are required on the render worker.")
+    for filter_name in ("ass", "sidechaincompress", "loudnorm"):
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-h", f"filter={filter_name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg is missing the required {filter_name} filter.")
+    fonts = (
+        Path("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"),
+    )
+    if not any(font.is_file() for font in fonts):
+        raise RuntimeError("A Noto Sans Devanagari font is required on the render worker.")
 
 
 def _create_storyboard_images(job: dict, output_dir: Path) -> list[Path]:
@@ -122,14 +238,18 @@ def _create_storyboard_images(job: dict, output_dir: Path) -> list[Path]:
             ("THINK BEFORE YOU TAP", "A message can look real and still be fake."),
             ("CHECK THE DOMAIN", "Small spelling changes matter."),
             ("KEEP OTP PRIVATE", "Never share a code or PIN."),
+            ("STOP THE PRESSURE", "Urgency is a warning sign."),
             ("VERIFY. THEN ACT.", "Open the official app yourself."),
+            ("YOUR NEXT MOVE", "Pause, verify, and protect your account."),
         ]
         if cyber
         else [
             ("THE BIG IDEA", "One clear question starts the story."),
             ("LOOK CLOSER", "Notice the detail most people miss."),
             ("HOW IT WORKS", "Follow the evidence, step by step."),
+            ("THE TURN", "The hidden mechanism changes the story."),
             ("THE TAKEAWAY", "Keep the lesson. Share your view."),
+            ("YOUR VERDICT", "What would you do next?"),
         ]
     )
     regular_font = next(
@@ -162,6 +282,8 @@ def _create_storyboard_images(job: dict, output_dir: Path) -> list[Path]:
         ("#55c8ff", "#ffb84d"),
         ("#b29aff", "#ff6878"),
         ("#38e0d0", "#a4efbb"),
+        ("#ffb84d", "#55c8ff"),
+        ("#a4efbb", "#b29aff"),
     ]
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = []
@@ -317,6 +439,8 @@ def render_video(
     audio_path: Path | None = None,
     scene_images: list[Path] | None = None,
     scene_videos: list[Path] | None = None,
+    bgm_path: Path | None = None,
+    scene_assets: list[tuple[Path, bool]] | None = None,
 ) -> str:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -330,59 +454,43 @@ def render_video(
         duration = max(15, min(90, round(measured_audio)))
     if job.get("format") == "instagram_reel":
         duration = max(45, min(60, duration))
-    font = job.get("font_path") or "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"
-    font_option = f":fontfile='{_escape_font_path(font)}'" if Path(font).is_file() else ""
-    text_dir = output_dir / f"{job['id']}-captions"
-    text_dir.mkdir(parents=True, exist_ok=True)
-    if scene_videos is not None:
+    if scene_assets is not None:
+        if len(scene_assets) != 6 or any(not path.is_file() for path, _ in scene_assets):
+            raise RuntimeError("All six mixed scene assets are required for this video.")
+        scene_paths = [path for path, _ in scene_assets]
+        scene_video_flags = [is_video for _, is_video in scene_assets]
+    elif scene_videos is not None:
         if len(scene_videos) != 6 or any(not path.is_file() for path in scene_videos):
             raise RuntimeError("All six generated MiniMax scene videos are required.")
         scene_paths = scene_videos
-        scene_is_video = True
+        scene_video_flags = [True] * len(scene_paths)
     elif scene_images is not None:
         if len(scene_images) != 6 or any(not path.is_file() for path in scene_images):
             raise RuntimeError("All six generated scene images are required for this video.")
         scene_paths = scene_images
-        scene_is_video = False
+        scene_video_flags = [False] * len(scene_paths)
     else:
         scene_paths = (
             [image_path]
             if image_path and image_path.is_file()
             else _create_storyboard_images(job, output_dir)
         )
-        scene_is_video = False
+        scene_video_flags = [False] * len(scene_paths)
     if not scene_paths:
         raise RuntimeError("No illustration scenes were created for this video.")
-    scene_duration = duration / len(scene_paths)
-    cues = _caption_timing(job, duration)
+    scene_durations = _scene_durations(job, duration, len(scene_paths))
+    ass_path = _write_ass_file(job, duration, output_dir)
     segments = []
     for scene_index, scene_path in enumerate(scene_paths):
-        segment_start = scene_index * scene_duration
-        segment_end = (scene_index + 1) * scene_duration
+        scene_duration = scene_durations[scene_index]
+        scene_is_video = scene_video_flags[scene_index]
         filters = [
-            "scale=780:1386:force_original_aspect_ratio=increase",
-            "crop=720:1280:x='25+15*sin(t*0.25)':y='53+20*cos(t*0.2)'",
+            "scale=1170:2079:force_original_aspect_ratio=increase",
+            "crop=1080:1920:x='38+22*sin(t*0.25)':y='80+30*cos(t*0.2)'",
             "setsar=1",
             "format=yuv420p",
         ]
-        for cue_index, (caption, start, end) in enumerate(cues):
-            local_start = max(0.0, start - segment_start)
-            local_end = min(scene_duration, end - segment_start)
-            if local_end <= local_start:
-                continue
-            caption_path = text_dir / f"scene-{scene_index}-caption-{cue_index}.txt"
-            caption_path.write_text(caption, encoding="utf-8")
-            filters.extend(
-                [
-                    f"drawbox=x=30:y=ih-300:w=iw-60:h=220:"
-                    f"color=black@0.72:t=fill:enable='between(t,{local_start:.3f},{local_end:.3f})'",
-                    f"drawtext=textfile='{_filter_path(caption_path)}':"
-                    f"fontcolor=white:fontsize=36:line_spacing=10:"
-                    "x=(w-text_w)/2:y=(h-text_h)/2:"
-                    f"enable='between(t,{local_start:.3f},{local_end:.3f})'{font_option}",
-                ]
-            )
-        filters.append("drawbox=x=16:y=16:w=iw-32:h=ih-32:color=0x38e0d0@0.12:t=2")
+        filters.append("drawbox=x=24:y=24:w=iw-48:h=ih-48:color=0x38e0d0@0.12:t=3")
         segment_path = output_dir / f"{job['id']}-segment-{scene_index + 1}.mp4"
         command = [
             ffmpeg,
@@ -424,7 +532,7 @@ def render_video(
             "-pix_fmt",
             "yuv420p",
             "-r",
-            "24",
+            "30",
             "-t",
             f"{scene_duration:.3f}",
             "-movflags",
@@ -470,21 +578,71 @@ def render_video(
         "-i",
         str(concat_path),
     ]
+    voice_index = None
+    music_index = None
+    next_input = 1
     if audio_path and audio_path.is_file():
-        command.extend(["-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"])
+        voice_index = next_input
+        next_input += 1
+        command.extend(["-i", str(audio_path)])
+    if bgm_path and bgm_path.is_file():
+        music_index = next_input
+        command.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
+
+    filters = [
+        f"[0:v]ass=filename='{_filter_path(ass_path)}':"
+        "fontsdir='/usr/share/fonts/truetype/noto'[v]"
+    ]
+    if voice_index is not None:
+        filters.append(
+            f"[{voice_index}:a]highpass=f=70,"
+            "acompressor=threshold=0.09:ratio=3:attack=15:release=180,"
+            "loudnorm=I=-16:LRA=7:TP=-1.5,"
+            f"atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[voice]"
+        )
+    if music_index is not None:
+        filters.append(
+            f"[{music_index}:a]atrim=duration={duration:.3f},asetpts=PTS-STARTPTS,"
+            "volume=0.16,"
+            "afade=t=in:st=0:d=0.8,"
+            f"afade=t=out:st={max(0, duration - 1):.3f}:d=1[music]"
+        )
+    if voice_index is not None and music_index is not None:
+        filters.extend([
+            "[music][voice]sidechaincompress=threshold=0.025:ratio=8:"
+            "attack=20:release=300[ducked]",
+            "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2,"
+            f"atrim=duration={duration:.3f},alimiter=limit=0.90[a]",
+        ])
+    elif voice_index is not None:
+        filters.append("[voice]alimiter=limit=0.90[a]")
+    elif music_index is not None:
+        filters.append("[music]loudnorm=I=-18:LRA=7:TP=-1.5,alimiter=limit=0.90[a]")
+
+    command.extend(["-filter_complex", ";".join(filters), "-map", "[v]"])
+    if voice_index is not None or music_index is not None:
+        command.extend(["-map", "[a]", "-c:a", "aac", "-b:a", "160k"])
     else:
-        command.extend(["-map", "0:v:0", "-an"])
-    command.extend(
-        [
-            "-c:v",
-            "copy",
-            "-t",
-            str(duration),
-            "-movflags",
-            "+faststart",
-        ]
-    )
-    if audio_path and audio_path.is_file():
+        command.append("-an")
+    command.extend([
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "22",
+        "-threads:v",
+        "1",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
+        "-t",
+        str(duration),
+        "-movflags",
+        "+faststart",
+    ])
+    if voice_index is not None or music_index is not None:
         command.append("-shortest")
     command.append(str(output_path))
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -499,11 +657,11 @@ def render_video(
         if detail:
             diagnostic = f"{diagnostic}; {detail}"
         raise RuntimeError(f"FFmpeg render failed: {diagnostic}")
-    if audio_path and audio_path.is_file():
+    if voice_index is not None or music_index is not None:
         if not ffprobe:
-            raise RuntimeError("FFprobe is required to verify the generated narration track.")
+            raise RuntimeError("FFprobe is required to verify the generated audio track.")
         if not _has_audio_stream(ffprobe, output_path):
-            raise RuntimeError("FFmpeg render completed without the required narration audio track.")
+            raise RuntimeError("FFmpeg render completed without the required audio track.")
     return str(output_path)
 
 
@@ -646,6 +804,32 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                         response.raise_for_status()
                         destination.write_bytes(response.content)
                         local_assets[kind] = destination
+                    timing_path = local_assets.get("voice_timing")
+                    if timing_path is not None:
+                        try:
+                            timing_payload = json.loads(timing_path.read_text(encoding="utf-8"))
+                            timed_cues = timing_payload.get("caption_cues")
+                            if isinstance(timed_cues, list) and timed_cues:
+                                job["caption_cues"] = timed_cues
+                                job["caption_timing_source"] = timing_payload.get("timing_source")
+                        except (OSError, json.JSONDecodeError):
+                            raise RuntimeError("Voice timing sidecar is invalid.")
+                    mixed_scene_assets = None
+                    if any(
+                        key.startswith("scene_") or key.startswith("scene_video_")
+                        for key in local_assets
+                    ):
+                        fallback_images = _create_storyboard_images(job, job_work_dir)
+                        mixed_scene_assets = []
+                        for index in range(1, 7):
+                            video = local_assets.get(f"scene_video_{index}")
+                            image = local_assets.get(f"scene_{index}")
+                            if video is not None:
+                                mixed_scene_assets.append((video, True))
+                            elif image is not None:
+                                mixed_scene_assets.append((image, False))
+                            else:
+                                mixed_scene_assets.append((fallback_images[index - 1], False))
                     print(
                         f"Render inputs for {job['id']}: "
                         f"{ {kind: path.stat().st_size for kind, path in local_assets.items()} }",
@@ -654,18 +838,10 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                     render_path = render_video(
                         job,
                         job_work_dir,
-                        local_assets.get("image"),
-                        local_assets.get("voiceover"),
-                        [
-                            local_assets[f"scene_{index}"]
-                            for index in range(1, 7)
-                            if f"scene_{index}" in local_assets
-                        ] or None,
-                        [
-                            local_assets[f"scene_video_{index}"]
-                            for index in range(1, 7)
-                            if f"scene_video_{index}" in local_assets
-                        ] or None,
+                        image_path=local_assets.get("image"),
+                        audio_path=local_assets.get("voiceover"),
+                        bgm_path=local_assets.get("bgm"),
+                        scene_assets=mixed_scene_assets,
                     )
                     thumbnails = render_thumbnails(job, Path(render_path), job_work_dir)
                     for platform, thumbnail_path in thumbnails.items():
@@ -748,4 +924,9 @@ if __name__ == "__main__":
         raise SystemExit(str(exc)) from exc
     if any(ord(char) < 33 or ord(char) > 126 for char in args.token):
         raise SystemExit("WORKER_TOKEN contains unsupported characters; re-enter the Railway token exactly.")
+    try:
+        _validate_render_runtime()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    print("Render runtime ready: FFmpeg ASS captions, audio ducking, loudness, and Devanagari font available.", flush=True)
     run(args.url, args.token, max(5, args.poll_seconds), Path(args.output_dir))
