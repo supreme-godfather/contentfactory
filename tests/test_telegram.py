@@ -1266,7 +1266,7 @@ class TestMessageBuilders:
         assert destination.read_bytes() == b"audio"
         assert request.call_args.args[0].endswith("/text-to-speech/voice_123/with-timestamps")
         assert request.call_args.kwargs["headers"]["xi-api-key"] == "secret-key"
-        assert request.call_args.kwargs["json"]["model_id"] == "eleven_multilingual_v2"
+        assert request.call_args.kwargs["json"]["model_id"] == "eleven_v4_turbo"
         assert destination.with_suffix(".timing.json").is_file()
 
     def test_no_paid_mode_ui_is_visible(self):
@@ -1285,6 +1285,8 @@ class TestMessageBuilders:
             for button in row
         ]
         assert "elevenlabs_voice_id" in voice_callbacks
+        assert "elevenlabs_tts_model" in voice_callbacks
+        assert "voice_catalog" in voice_callbacks
         assert "fish_audio_reference_id" in voice_callbacks
         assert "fish_audio_model" in voice_callbacks
         assert "minimax_voice_id" in voice_callbacks

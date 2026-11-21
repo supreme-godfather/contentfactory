@@ -74,11 +74,13 @@ from .hq import (
 )
 from .provider_credentials import (
     FISH_AUDIO_MODELS,
+    ELEVENLABS_TTS_MODELS,
     MINIMAX_SPEECH_MODELS,
     PROVIDER_INFO,
     PROVIDER_ROLES,
     delete_provider_secret,
     get_elevenlabs_voice_id,
+    get_elevenlabs_tts_model,
     get_fish_audio_model_id,
     get_fish_audio_reference_id,
     get_huggingface_image_endpoint,
@@ -90,6 +92,7 @@ from .provider_credentials import (
     provider_status,
     select_provider,
     set_elevenlabs_voice_id,
+    set_elevenlabs_tts_model,
     set_fish_audio_model_id,
     set_fish_audio_reference_id,
     set_huggingface_image_endpoint,
@@ -118,6 +121,7 @@ _pending_instagram_id: set[int] = set()
 _pending_schedule: dict[int, str] = {}
 _unauthorized_notice_times: OrderedDict[int, float] = OrderedDict()
 _background_tasks: set[asyncio.Task[object]] = set()
+_voice_catalog_results: dict[str, list[dict[str, object]]] = {}
 _UNAUTHORIZED_NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
 _UNAUTHORIZED_NOTICE_MAX_USERS = 4096
 
@@ -1358,10 +1362,15 @@ def _provider_role_keyboard(role: str) -> dict[str, list[list[dict[str, str]]]]:
             "huggingface_image_endpoint",
         )])
     if role == "voice":
+        rows.append([_button("🎭 Browse Hindi voices", "voice_catalog")])
         rows.append([_button(
             "🎙️ Set ElevenLabs voice ID"
             + (" ✅" if status.get("elevenlabs_voice_id") else " ⚪"),
             "elevenlabs_voice_id",
+        )])
+        rows.append([_button(
+            f"🎙 ElevenLabs model: {get_elevenlabs_tts_model()}",
+            "elevenlabs_tts_model",
         )])
         rows.append([_button(
             "🐟 Set Fish Audio reference voice"
@@ -1407,7 +1416,7 @@ def _provider_role_message(role: str) -> str:
         )
         + (
             "ElevenLabs, Fish Audio, and MiniMax speech can consume API or plan credits. "
-            "Fish Audio requires a reference voice ID; MiniMax requires a voice ID. "
+            "Use Browse Hindi voices to select provider-owned/system or account voices explicitly. "
             if role == "voice"
             else ""
         )
@@ -1435,6 +1444,19 @@ def _fish_audio_model_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     return {"inline_keyboard": rows}
 
 
+def _elevenlabs_tts_model_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    current = get_elevenlabs_tts_model()
+    rows = [
+        [_button(
+            f"{'✓ ' if model == current else ''}{model}",
+            f"elevenlabs_tts_model_set:{model}",
+        )]
+        for model in ELEVENLABS_TTS_MODELS
+    ]
+    rows.append([_button("🔙 Back to Voice", "provider_role:voice")])
+    return {"inline_keyboard": rows}
+
+
 def _minimax_speech_model_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     current = get_minimax_speech_model()
     rows = [
@@ -1448,6 +1470,98 @@ def _minimax_speech_model_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     return {"inline_keyboard": rows}
 
 
+_VOICE_CATALOG_PAGE_SIZE = 8
+
+
+def _voice_catalog_home_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    status = provider_status()
+    return {"inline_keyboard": [
+        [_button(
+            f"🐟 Fish Official Hindi{' ✅' if status.get('fish_audio') else ''}",
+            "voice_catalog:fish_audio:0",
+        )],
+        [_button(
+            f"🎚 MiniMax Hindi system{' ✅' if status.get('minimax') else ''}",
+            "voice_catalog:minimax:0",
+        )],
+        [_button(
+            f"🎙 ElevenLabs account Hindi{' ✅' if status.get('elevenlabs') else ''}",
+            "voice_catalog:elevenlabs:0",
+        )],
+        [_button("🔙 Back to Voice", "provider_role:voice")],
+    ]}
+
+
+def _cache_voice_options(provider: str, options: list[dict[str, object]]) -> None:
+    _voice_catalog_results[provider] = options[:100]
+
+
+def _voice_token(provider: str, voice_id: str) -> str:
+    return hashlib.sha256(f"{provider}:{voice_id}".encode("utf-8")).hexdigest()[:16]
+
+
+def _voice_from_token(provider: str, token: str) -> dict[str, object]:
+    for option in _voice_catalog_results.get(provider, []):
+        voice_id = str(option.get("voice_id") or "")
+        if voice_id and _voice_token(provider, voice_id) == token:
+            return option
+    raise ValueError("Voice catalog selection expired; refresh the catalog")
+
+
+def _voice_catalog_message(provider: str, page: int) -> str:
+    labels = {
+        "fish_audio": "Fish Official Hindi voices",
+        "minimax": "MiniMax Hindi system voices",
+        "elevenlabs": "ElevenLabs Hindi account voices",
+    }
+    options = _voice_catalog_results.get(provider, [])
+    pages = max(1, (len(options) + _VOICE_CATALOG_PAGE_SIZE - 1) // _VOICE_CATALOG_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    lines = [
+        f"🎭 <b>{labels.get(provider, provider)}</b>",
+        _divider(),
+        "",
+        f"Found: <b>{len(options)}</b> · Page <b>{page + 1}/{pages}</b>",
+        "Selection changes new generations only. Run Blind Voice Benchmark before production.",
+        "",
+    ]
+    for option in options[page * _VOICE_CATALOG_PAGE_SIZE:(page + 1) * _VOICE_CATALOG_PAGE_SIZE]:
+        source = html.escape(str(option.get("source") or ""))
+        lines.append(
+            f"• <b>{html.escape(str(option.get('name') or 'Voice'))}</b> · {source}\n"
+            f"  {html.escape(str(option.get('description') or '')[:180])}"
+        )
+    if not options:
+        lines.append("No eligible Hindi voices were returned for this account.")
+    return "\n".join(lines)
+
+
+def _voice_catalog_keyboard(provider: str, page: int) -> dict[str, list[list[dict[str, str]]]]:
+    options = _voice_catalog_results.get(provider, [])
+    pages = max(1, (len(options) + _VOICE_CATALOG_PAGE_SIZE - 1) // _VOICE_CATALOG_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    rows = []
+    for option in options[page * _VOICE_CATALOG_PAGE_SIZE:(page + 1) * _VOICE_CATALOG_PAGE_SIZE]:
+        voice_id = str(option.get("voice_id") or "")
+        if voice_id:
+            rows.append([_button(
+                f"Select · {str(option.get('name') or 'Voice')[:40]}",
+                f"voice_choose:{provider}:{_voice_token(provider, voice_id)}",
+            )])
+    navigation = []
+    if page > 0:
+        navigation.append(_button("◀ Previous", f"voice_catalog:{provider}:{page - 1}"))
+    if page + 1 < pages:
+        navigation.append(_button("Next ▶", f"voice_catalog:{provider}:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.extend([
+        [_button("🔄 Refresh catalog", f"voice_catalog_refresh:{provider}:0")],
+        [_button("🔙 Voice catalogs", "voice_catalog")],
+    ])
+    return {"inline_keyboard": rows}
+
+
 def _provider_video_message() -> str:
     railway_online = any(
         worker["worker_id"] == "railway-renderer" and worker["online"]
@@ -1457,8 +1571,8 @@ def _provider_video_message() -> str:
     return (
         "🎞 <b>Video rendering</b>\n"
         f"{_divider()}\n\n"
-        "The video is assembled by FFmpeg on the Railway worker; there is no "
-        "video-generation API connected yet.\n\n"
+        "MiniMax/Higgsfield can generate selected source scenes; FFmpeg assembles, "
+        "captions, mixes, validates, and exports the final video.\n\n"
         "Selected worker: <b>railway-renderer</b>\n"
         f"Railway worker status: <b>{worker_status_text}</b>\n"
         "RDP workers are not used. If the Railway worker is offline or not deployed, "
@@ -3156,6 +3270,101 @@ async def handle_update(update: dict[str, Any]) -> None:
                     _provider_video_keyboard(),
                 )
 
+            elif data == "voice_catalog":
+                await send_message(
+                    chat_id,
+                    "🎭 <b>Hindi Voice Browser</b>\n\n"
+                    "Fish lists provider-official Hindi designs, MiniMax lists documented system voices, "
+                    "and ElevenLabs lists Hindi voices available to your account.",
+                    _voice_catalog_home_keyboard(),
+                )
+
+            elif data.startswith("voice_catalog:") or data.startswith("voice_catalog_refresh:"):
+                parts = data.split(":")
+                provider = parts[1] if len(parts) > 1 else ""
+                try:
+                    page = int(parts[2]) if len(parts) > 2 else 0
+                except ValueError:
+                    page = 0
+                if provider not in {"fish_audio", "minimax", "elevenlabs"}:
+                    await send_message(chat_id, "⚠️ Unsupported voice catalog.", _voice_catalog_home_keyboard())
+                    return
+                force_refresh = data.startswith("voice_catalog_refresh:")
+                if force_refresh or provider not in _voice_catalog_results:
+                    from .voice_catalog import discover_hindi_voices
+
+                    try:
+                        options = await asyncio.to_thread(discover_hindi_voices, provider)
+                    except Exception as exc:
+                        logger.warning("Voice catalog lookup failed (%s)", type(exc).__name__)
+                        await send_message(
+                            chat_id,
+                            f"⚠️ {html.escape(provider.title())} catalog is unavailable. "
+                            "Check its API key and provider status.",
+                            _voice_catalog_home_keyboard(),
+                        )
+                        return
+                    _cache_voice_options(provider, options)
+                await send_message(
+                    chat_id,
+                    _voice_catalog_message(provider, page),
+                    _voice_catalog_keyboard(provider, page),
+                )
+
+            elif data.startswith("voice_choose:"):
+                parts = data.split(":")
+                if len(parts) != 3:
+                    await send_message(chat_id, "⚠️ Invalid voice selection.", _voice_catalog_home_keyboard())
+                    return
+                provider, token = parts[1], parts[2]
+                try:
+                    option = _voice_from_token(provider, token)
+                except ValueError as exc:
+                    await send_message(chat_id, f"⚠️ {html.escape(str(exc))}", _voice_catalog_home_keyboard())
+                    return
+                await send_message(
+                    chat_id,
+                    "🎭 <b>Confirm voice selection</b>\n\n"
+                    f"Provider: <b>{html.escape(provider.replace('_', ' ').title())}</b>\n"
+                    f"Voice: <b>{html.escape(str(option.get('name') or 'Voice'))}</b>\n"
+                    f"Source: {html.escape(str(option.get('source') or ''))}\n\n"
+                    "This selection applies to new jobs. Run the blind benchmark before production.",
+                    {"inline_keyboard": [
+                        [_button("Confirm selection", f"voice_confirm:{provider}:{token}")],
+                        [_button("Cancel", f"voice_catalog:{provider}:0")],
+                    ]},
+                )
+
+            elif data.startswith("voice_confirm:"):
+                parts = data.split(":")
+                if len(parts) != 3:
+                    await send_message(chat_id, "⚠️ Invalid voice confirmation.", _voice_catalog_home_keyboard())
+                    return
+                provider, token = parts[1], parts[2]
+                option = _voice_from_token(provider, token)
+                voice_id = str(option.get("voice_id") or "")
+                if provider == "fish_audio":
+                    set_fish_audio_reference_id(voice_id)
+                elif provider == "minimax":
+                    set_minimax_voice_id(voice_id)
+                elif provider == "elevenlabs":
+                    set_elevenlabs_voice_id(voice_id)
+                else:
+                    raise ValueError("Unsupported voice provider")
+                ready = bool(provider_status().get(provider))
+                if ready:
+                    set_provider_for_role("voice", provider)
+                await send_message(
+                    chat_id,
+                    f"✅ <b>{html.escape(str(option.get('name') or 'Voice'))} selected.</b>\n"
+                    + (
+                        "The provider is now active for new voice generations."
+                        if ready
+                        else "Add this provider's API key before activating it for generation."
+                    ),
+                    _provider_role_keyboard("voice"),
+                )
+
             elif data == "elevenlabs_voice_id":
                 _pending_elevenlabs_voice_id.add(chat_id)
                 await send_message(
@@ -3165,6 +3374,31 @@ async def handle_update(update: dict[str, Any]) -> None:
                     "and send it here. It is an identifier, not your API key. "
                     "The ID is saved with factory settings. Send /cancel to stop.",
                     _back_keyboard(),
+                )
+
+            elif data == "elevenlabs_tts_model":
+                await send_message(
+                    chat_id,
+                    "🎙 <b>ElevenLabs TTS model</b>\n\n"
+                    "Turbo is the cost-efficient production default. Benchmark expressive models before switching.",
+                    _elevenlabs_tts_model_keyboard(),
+                )
+
+            elif data.startswith("elevenlabs_tts_model_set:"):
+                model_id = data.split(":", 1)[1]
+                try:
+                    set_elevenlabs_tts_model(model_id)
+                except ValueError:
+                    await send_message(
+                        chat_id,
+                        "⚠️ Unsupported ElevenLabs model.",
+                        _elevenlabs_tts_model_keyboard(),
+                    )
+                    return
+                await send_message(
+                    chat_id,
+                    f"✅ <b>ElevenLabs model set to {html.escape(model_id)}</b>",
+                    _elevenlabs_tts_model_keyboard(),
                 )
 
 

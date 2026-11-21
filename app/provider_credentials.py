@@ -193,6 +193,7 @@ def provider_status() -> dict[str, object]:
     # Google can also be configured purely through environment variables.
     status["google"] = bool(configured["google"] or settings.google_service_account_json)
     status["elevenlabs_voice_id"] = bool(get_elevenlabs_voice_id())
+    status["elevenlabs_tts_model"] = get_elevenlabs_tts_model()
     status["fish_audio_reference_id"] = bool(get_fish_audio_reference_id())
     status["fish_audio_model_id"] = get_fish_audio_model_id()
     status["minimax_voice_id"] = bool(get_minimax_voice_id())
@@ -470,6 +471,15 @@ def set_elevenlabs_voice_id(voice_id: str) -> None:
 
 FISH_AUDIO_MODELS = ("s2.1-pro", "s2.1-pro-free", "s2-pro", "drama-3", "s3-pro")
 MINIMAX_SPEECH_MODELS = ("speech-2.8-turbo", "speech-2.8-hd")
+ELEVENLABS_TTS_MODELS = (
+    "eleven_v4_turbo",
+    "eleven_v4",
+    "eleven_v3",
+    "eleven_multilingual_v2",
+    "eleven_flash_v2_5",
+)
+FISH_AUDIO_DEFAULT_REFERENCE_ID = "4ebf5f78ef984caba1fbf70c8803f12b"
+MINIMAX_DEFAULT_VOICE_ID = "hindi_male_1_v2"
 
 
 def _get_factory_setting(key: str, default: str = "") -> str:
@@ -498,7 +508,7 @@ def _validate_voice_identifier(value: str, label: str) -> str:
 
 
 def get_fish_audio_reference_id() -> str:
-    return _get_factory_setting("fish_audio_reference_id")
+    return _get_factory_setting("fish_audio_reference_id", FISH_AUDIO_DEFAULT_REFERENCE_ID)
 
 
 def set_fish_audio_reference_id(reference_id: str) -> None:
@@ -521,7 +531,7 @@ def set_fish_audio_model_id(model_id: str) -> None:
 
 
 def get_minimax_voice_id() -> str:
-    return _get_factory_setting("minimax_voice_id")
+    return _get_factory_setting("minimax_voice_id", MINIMAX_DEFAULT_VOICE_ID)
 
 
 def set_minimax_voice_id(voice_id: str) -> None:
@@ -541,6 +551,18 @@ def set_minimax_speech_model(model_id: str) -> None:
     if value not in MINIMAX_SPEECH_MODELS:
         raise ValueError("Unsupported MiniMax speech model.")
     _set_factory_setting("minimax_speech_model", value)
+
+
+def get_elevenlabs_tts_model() -> str:
+    value = _get_factory_setting("elevenlabs_tts_model", "eleven_v4_turbo")
+    return value if value in ELEVENLABS_TTS_MODELS else "eleven_v4_turbo"
+
+
+def set_elevenlabs_tts_model(model_id: str) -> None:
+    value = model_id.strip()
+    if value not in ELEVENLABS_TTS_MODELS:
+        raise ValueError("Unsupported ElevenLabs TTS model.")
+    _set_factory_setting("elevenlabs_tts_model", value)
 
 
 

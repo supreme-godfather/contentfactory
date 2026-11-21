@@ -29,6 +29,30 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### OpenCode — 2026-11-21 (Hindi voice catalogs)
+
+- **Task:** Research and complete voice ID selection for MiniMax, ElevenLabs and
+  Fish Audio without guessing unstable or unverified IDs.
+- **Status:** Added a Telegram Hindi Voice Browser with provider catalog
+  validation, confirmation, and explicit provider activation. Fish defaults to
+  Fish Official Aryan (`4ebf5f78ef984caba1fbf70c8803f12b`); MiniMax defaults
+  to documented system voice `hindi_male_1_v2` and offers all three official
+  Hindi system voices. ElevenLabs uses the authenticated `/v2/voices` catalog
+  and returns only Hindi-labelled/verified account voices; no community voice
+  ID is hardcoded. Added selectable ElevenLabs TTS models with
+  `eleven_v4_turbo` as the cost-efficient default.
+- **Verification:** `python -m pytest -q` — 234 passed. No provider key was
+  printed, committed, or moved into environment variables.
+- **Production configuration:** MiniMax `hindi_male_1_v2` with
+  `speech-2.8-turbo` is the active voice; Fish Official Aryan is configured on
+  `s2.1-pro-free` as a non-active preview candidate. ElevenLabs retains its
+  saved voice selection but its API key is not configured, so it cannot be
+  activated yet. Script and AI-video roles remain MiniMax; image is off.
+- **Next action:** Add the ElevenLabs API key, open Settings -> Providers ->
+  Voice -> Browse Hindi voices, select a verified/account voice, then run Blind
+  Voice Benchmark before changing the production provider. Add Fish API credit
+  and switch from `s2.1-pro-free` to `s2.1-pro` before commercial Fish output.
+
 ### OpenCode — 2026-11-21 (owner corrections + premium UI)
 
 - **Task:** Apply owner corrections after the engine/clipper release: Agent

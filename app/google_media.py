@@ -93,7 +93,7 @@ def generate_edge_tts_voiceover(text: str, destination: Path) -> None:
 
 def generate_elevenlabs_voiceover(text: str, destination: Path) -> None:
     from .captions import character_alignment_to_words, words_to_caption_cues
-    from .provider_credentials import get_elevenlabs_voice_id
+    from .provider_credentials import get_elevenlabs_tts_model, get_elevenlabs_voice_id
 
     api_key = get_provider_secret("elevenlabs")
     voice_id = get_elevenlabs_voice_id()
@@ -105,7 +105,7 @@ def generate_elevenlabs_voiceover(text: str, destination: Path) -> None:
         params={"output_format": "mp3_44100_128"},
         json={
             "text": text[:4800],
-            "model_id": "eleven_multilingual_v2",
+            "model_id": get_elevenlabs_tts_model(),
         },
         timeout=180,
     )

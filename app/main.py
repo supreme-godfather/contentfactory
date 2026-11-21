@@ -114,6 +114,13 @@ class PublishingStateRequest(BaseModel):
     instagram_enabled: bool
 
 
+class VoiceConfigurationRequest(BaseModel):
+    provider: str = Field(pattern="^(fish_audio|minimax|elevenlabs)$")
+    voice_id: str = Field(min_length=1, max_length=160)
+    model_id: str = Field(min_length=1, max_length=160)
+    activate: bool = False
+
+
 class TrendRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
     source: str = Field(default="manual", max_length=80)
@@ -202,6 +209,10 @@ def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
         "media_generation_enabled": media_generation_enabled(),
         "no_paid_providers": no_paid_providers_enabled(),
         "video_provider": get_provider_for_role("video"),
+        "provider_roles": {
+            role: get_provider_for_role(role)
+            for role in ("script", "image", "voice", "video")
+        },
         "provider_status": provider_status(),
     }
 
@@ -670,6 +681,48 @@ def set_publishing_state(
         "instagram_enabled": request.instagram_enabled,
         "human_approval_required": True,
         "automation_enabled": False,
+    }
+
+
+@app.post("/api/admin/providers/voice/configure")
+def configure_voice_provider(
+    request: VoiceConfigurationRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .provider_credentials import (
+        provider_status,
+        set_elevenlabs_tts_model,
+        set_elevenlabs_voice_id,
+        set_fish_audio_model_id,
+        set_fish_audio_reference_id,
+        set_minimax_speech_model,
+        set_minimax_voice_id,
+        set_provider_for_role,
+    )
+
+    try:
+        if request.provider == "fish_audio":
+            set_fish_audio_reference_id(request.voice_id)
+            set_fish_audio_model_id(request.model_id)
+        elif request.provider == "minimax":
+            set_minimax_voice_id(request.voice_id)
+            set_minimax_speech_model(request.model_id)
+        else:
+            set_elevenlabs_voice_id(request.voice_id)
+            set_elevenlabs_tts_model(request.model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ready = bool(provider_status().get(request.provider))
+    if request.activate and not ready:
+        raise HTTPException(status_code=409, detail="Provider API key is not configured")
+    if request.activate:
+        set_provider_for_role("voice", request.provider)
+    return {
+        "provider": request.provider,
+        "voice_id": request.voice_id,
+        "model_id": request.model_id,
+        "ready": ready,
+        "active": request.activate and ready,
     }
 
 

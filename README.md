@@ -614,7 +614,7 @@ project `contentfactory-pro`:
 - `factory-clipper` is online as a separate unprivileged, outbound-only service
   using pinned `yt-dlp`, `curl-cffi`, FFmpeg, bounded temporary storage, and the
   shared authenticated worker protocol plus per-job lease tokens.
-- The full local suite passes: `230 passed`; compile checks and
+- The full local suite passes: `234 passed`; compile checks and
   `git diff --check` pass.
 - Original generation now stops for owner script approval before TTS, image,
   video, music, or rendering spend. Approval is bound to the current version.
@@ -622,6 +622,10 @@ project `contentfactory-pro`:
   stores encrypted credentials and voice/model IDs and offers a blind voice
   benchmark. Fish Audio TTS uses S2.1 Pro controls; optional Fish ASR supplies
   timestamps to subtitle-less clips when configured and explicitly allowed.
+- The Hindi Voice Browser validates current provider catalogs. Fish defaults to
+  Fish Official Aryan (`4ebf5f78ef984caba1fbf70c8803f12b`), MiniMax defaults
+  to the documented `hindi_male_1_v2` system voice, and ElevenLabs requires an
+  authenticated Hindi account/PVC selection instead of a fragile hardcoded ID.
 - Captions use a global escaped ASS track with Devanagari shaping and karaoke
   timing. ElevenLabs provider timing is preferred over estimated cues.
 - Telegram has a managed BGM/SFX catalogue. Real uploaded audio can be mixed
