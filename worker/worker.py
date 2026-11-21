@@ -194,6 +194,34 @@ def _filter_path(value: Path) -> str:
     )
 
 
+def _watermark_filter(job: dict, output_dir: Path, fontsize: int) -> str:
+    """Small semi-transparent owner credit in the top-right corner."""
+    watermark = job.get("watermark")
+    if not isinstance(watermark, dict) or not watermark.get("enabled"):
+        return ""
+    text = " ".join(str(watermark.get("text") or "").split())
+    if not text:
+        return ""
+    text_path = output_dir / f"{job['id']}-watermark.txt"
+    text_path.write_text(text, encoding="utf-8")
+    font = next(
+        (
+            candidate
+            for candidate in (
+                "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            )
+            if Path(candidate).is_file()
+        ),
+        None,
+    )
+    font_option = f":fontfile='{_escape_font_path(font)}'" if font else ""
+    return (
+        f"drawtext=textfile='{_filter_path(text_path)}':fontcolor=white@0.85:fontsize={fontsize}:"
+        f"box=1:boxcolor=black@0.35:boxborderw=8:x=w-tw-22:y=22{font_option}"
+    )
+
+
 def _ffmpeg_error_detail(stderr: str) -> str:
     detail = stderr.strip()
     if len(detail) > 1000:
@@ -491,6 +519,9 @@ def render_video(
             "format=yuv420p",
         ]
         filters.append("drawbox=x=24:y=24:w=iw-48:h=ih-48:color=0x38e0d0@0.12:t=3")
+        watermark_filter = _watermark_filter(job, output_dir, 30)
+        if watermark_filter:
+            filters.append(watermark_filter)
         segment_path = output_dir / f"{job['id']}-segment-{scene_index + 1}.mp4"
         command = [
             ffmpeg,
@@ -702,6 +733,7 @@ def render_thumbnails(job: dict, video_path: Path, output_dir: Path) -> dict[str
             raise ValueError("The API returned an invalid thumbnail filename.")
         destination = output_dir / filename
         title_path = _filter_path(title_file)
+        watermark_filter = _watermark_filter(job, output_dir, max(22, fontsize - 18))
         video_filter = (
             f"scale={width}:{height}:force_original_aspect_ratio=increase,"
             f"crop={width}:{height},"
@@ -710,6 +742,8 @@ def render_thumbnails(job: dict, video_path: Path, output_dir: Path) -> dict[str
             f"textfile='{title_path}':fontcolor=white:fontsize={fontsize}:"
             f"line_spacing=10:x=(w-text_w)/2:y=h*0.69{font_option}"
         )
+        if watermark_filter:
+            video_filter = f"{video_filter},{watermark_filter}"
         command = [
             ffmpeg,
             "-y",

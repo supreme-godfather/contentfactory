@@ -614,8 +614,24 @@ project `contentfactory-pro`:
 - `factory-clipper` is online as a separate unprivileged, outbound-only service
   using pinned `yt-dlp`, `curl-cffi`, FFmpeg, bounded temporary storage, and the
   shared authenticated worker protocol plus per-job lease tokens.
-- The full local suite passes: `234 passed`; compile checks and
+- The full local suite passes: `243 passed`; compile checks and
   `git diff --check` pass.
+- Script quality is now a three-pass pipeline on the cheap MiniMax route: a
+  retention draft (hook in the first two seconds, one curiosity loop, pattern
+  interrupts every six to eight seconds, breathable Devanagari sentences), a
+  strict retention editor that rewrites only what fails the checklist, and a
+  metadata pass that produces titles, description, hashtags, hook type and a cover
+  concept. Any failed pass degrades to the previous good state.
+- The owner can supply their own script, their own recorded voice-over, and
+  their own cover for a job from Telegram. A custom script rebuilds the
+  storyboard and captions, bumps the content version and clears approval. A
+  custom voice-over replaces provider narration for that job.
+- Long work runs behind a live, editable Telegram progress screen for scripting
+  and media generation.
+- Every final video and generated cover carries a small semi-transparent owner
+  credit in the top-right corner, switchable and editable from Settings.
+- Automation researches a hookable angle and verified points for each trending
+  topic before the script is written.
 - Original generation now stops for owner script approval before TTS, image,
   video, music, or rendering spend. Approval is bound to the current version.
 - Fish Audio, ElevenLabs, and MiniMax are selectable voice providers. Telegram

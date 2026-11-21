@@ -45,6 +45,36 @@ def set_automation_enabled(enabled: bool) -> None:
         session.commit()
 
 
+def _research_angle(topic: str) -> dict[str, object]:
+    """Ask the cheap research route for a hookable angle on a trending topic."""
+    try:
+        from .hq import get_niche_label
+        from .scriptwriter import research_topic_angle
+
+        return research_topic_angle(topic, get_niche_label())
+    except Exception:
+        logger.debug("Angle research unavailable for %s", topic, exc_info=True)
+        return {}
+
+
+def _facts_block(research: dict[str, object]) -> str:
+    """Format researched angle and claims as verified facts for the writer."""
+    if not research:
+        return ""
+    lines = []
+    angle = str(research.get("angle") or "").strip()
+    if angle:
+        lines.append(f"Angle to develop: {angle}")
+    claims = [str(item).strip() for item in (research.get("claims") or []) if str(item).strip()]
+    if claims:
+        lines.append("Verified points you may use (do not add anything else):")
+        lines.extend(f"- {claim}" for claim in claims[:6])
+    why_now = str(research.get("why_now") or "").strip()
+    if why_now:
+        lines.append(f"Why it matters now: {why_now}")
+    return "\n".join(lines)
+
+
 def run_automation_cycle() -> dict[str, object]:
     platform = get_publish_target()
     result: dict[str, object] = {
@@ -91,7 +121,10 @@ def run_automation_cycle() -> dict[str, object]:
             job = create_job(topic, platform, request_id=f"trend:{trend_id}")
             result["jobs_created"] = int(result["jobs_created"]) + 1
             if job.status == "queued" and job.stage == "topic":
-                generate_content(job.id)
+                research = _research_angle(topic)
+                if research:
+                    result["angles_researched"] = int(result.get("angles_researched", 0)) + 1
+                generate_content(job.id, facts=_facts_block(research))
                 result["jobs_generated"] = int(result["jobs_generated"]) + 1
         except Exception:
             logger.exception("Automation: failed to generate job for trend %s; leaving it as candidate", trend_id)

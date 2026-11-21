@@ -1584,19 +1584,32 @@ class TestHandleUpdate:
     @pytest.mark.asyncio
     async def test_generate_command(self):
         from app.hq import set_publish_target
-        from app.telegram import handle_update
+        from app.telegram import _background_tasks, handle_update
         from app.services import list_jobs
 
-        with patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send:
+        with (
+            patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send,
+            patch("app.telegram.send_progress_message", new_callable=AsyncMock, return_value=99),
+            patch("app.telegram.finish_progress_message", new_callable=AsyncMock) as mock_finish,
+        ):
             set_publish_target("both")
             await handle_update(_text_update("/generate भारत का इतिहास", update_id=40))
-            mock_send.assert_called_once()
-            text = mock_send.call_args[0][1]
-            assert "Script review" in text
-            assert "No voice, image, video, music, or rendering credits" in text
-            assert "भारत का इतिहास" in text
-            assert "Approve this exact version" in text
-            assert "40%" not in text
+            for task in list(_background_tasks):
+                await task
+                _background_tasks.discard(task)
+
+            final_text = ""
+            for call in mock_finish.call_args_list:
+                if "Script review" in str(call.args[2]):
+                    final_text = str(call.args[2])
+            if not final_text and mock_send.call_args_list:
+                final_text = str(mock_send.call_args_list[-1].args[1])
+
+            assert final_text, "the script review screen was never sent"
+            assert "No voice, image, video, music, or rendering credits" in final_text
+            assert "भारत का इतिहास" in final_text
+            assert "Approve this exact version" in final_text
+            assert "40%" not in final_text
             assert list_jobs()[0].platform == "both"
             assert list_jobs()[0].status == "awaiting_script_approval"
 
@@ -1639,14 +1652,19 @@ class TestHandleUpdate:
     @pytest.mark.asyncio
     async def test_duplicate_generate_update_does_not_generate_twice(self):
         from app.services import generate_content, list_jobs
-        from app.telegram import handle_update
+        from app.telegram import _background_tasks, handle_update
 
         update = _text_update("/generate भारत का इतिहास", update_id=43)
         with (
             patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send,
+            patch("app.telegram.send_progress_message", new_callable=AsyncMock, return_value=99),
+            patch("app.telegram.finish_progress_message", new_callable=AsyncMock),
             patch("app.telegram.generate_content", wraps=generate_content) as mock_generate,
         ):
             await handle_update(update)
+            for task in list(_background_tasks):
+                await task
+                _background_tasks.discard(task)
             await handle_update(update)
 
         assert len(list_jobs()) == 1

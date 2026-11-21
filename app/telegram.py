@@ -114,6 +114,10 @@ _pending_platform_setup: dict[int, str] = {}
 _pending_account_name: dict[int, str] = {}
 _pending_audio_upload: dict[int, str] = {}
 _pending_clip_source: dict[int, tuple[str, int | None]] = {}
+_pending_custom_script: dict[int, tuple[str, int]] = {}
+_pending_custom_voice: dict[int, tuple[str, int]] = {}
+_pending_custom_cover: dict[int, tuple[str, int, str]] = {}
+_pending_watermark_text: set[int] = set()
 _pending_icon_slot: dict[int, str] = {}
 _pending_custom_creator: set[int] = set()
 _pending_custom_part_count: dict[int, int] = {}
@@ -229,14 +233,21 @@ def _operations_keyboard() -> dict[str, list[list[dict[str, str]]]]:
 
 
 def _settings_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .hq import get_watermark_text, is_watermark_enabled
+
     return {"inline_keyboard": [
-        [_icon_button("niche", "Niche", "hq:niche"), _icon_button("content_format", "Format", "hq:format")],
-        [_icon_button("providers", "Providers", "providers"), _icon_button("audio_library", "Audio", "audio_catalog")],
-        [_icon_button("accounts", "Accounts", "accounts"), _icon_button("publishing_destinations", "Destinations", "hq:publish_target")],
-        [_icon_button("daily_limit", "Daily limit", "hq:limit"), _icon_button("publishing_mode", "Publishing mode", "publishing_mode")],
-        [_icon_button("icon_theme", "Premium icons", "icon:panel:0")],
-        [_icon_button("settings", "Advanced controls", "controls")],
-        [_icon_button("back", "Home", "menu")],
+        [_button("🎯 Niche", "hq:niche"), _button("🎞 Format", "hq:format")],
+        [_button("🧩 Providers", "providers"), _button("🎵 Audio", "audio_catalog")],
+        [_button("🔗 Accounts", "accounts"), _button("📡 Destinations", "hq:publish_target")],
+        [_button("📤 Daily limit", "hq:limit"), _button("🧪 Publishing mode", "publishing_mode")],
+        [_button(
+            f"🔒 Watermark: {'ON' if is_watermark_enabled() else 'OFF'}",
+            "watermark:toggle",
+        )],
+        [_button(f"🔒 Text: {get_watermark_text()}", "watermark:text")],
+        [_button("💎 Premium icons", "icon:panel:0")],
+        [_button("⚙️ Advanced controls", "controls")],
+        [_button("🔙 Home", "menu")],
     ]}
 
 
@@ -686,6 +697,7 @@ def _job_keyboard(job_or_id: Any) -> dict[str, list[list[dict[str, str]]]]:
     elif job.status == "awaiting_script_approval":
         rows.extend([
             [_button("✅ Approve script & generate", f"script_approve:{job_id}:{job.content_version}")],
+            [_button("📝 Use my own script", f"script_custom:{job_id}:{job.content_version}")],
             [_button("🔄 Rewrite script", f"script_regenerate:{job_id}:{job.content_version}")],
             [_button("🗑 Reject job", f"script_reject:{job_id}:{job.content_version}")],
         ])
@@ -697,6 +709,7 @@ def _job_keyboard(job_or_id: Any) -> dict[str, list[list[dict[str, str]]]]:
         rows.extend([
             [_button("✅ Approve final video", f"approve:{job_id}:{job.content_version}"), _button("✍️ Revise", f"revise:{job_id}")],
             [_button("🔍 Quality check", f"quality:{job_id}"), _button("▶️ Preview video", f"preview:{job_id}")],
+            [_button("🎨 My own cover", f"cover_custom:{job_id}:{job.content_version}")],
             [_button("🗑 Cancel job", f"cancel:{job_id}")],
         ])
     elif job.status == "approved":
@@ -1048,21 +1061,108 @@ def _script_review_message(job: Any) -> str:
     script = html.escape((job.script_text or "").strip())
     if len(script) > 3500:
         script = script[:3497] + "..."
+    try:
+        import json as _json
+
+        metadata = _json.loads(job.metadata_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    polish_note = (
+        "\n✨ <i>Retention editor pass applied.</i>\n" if metadata.get("script_polished") else ""
+    )
+    custom_note = (
+        "\n📝 <i>This is your own script.</i>\n" if metadata.get("custom_script") else ""
+    )
     return (
         f"📝 <b>Script review · v{job.content_version}</b>\n{_divider()}\n\n"
         f"<b>{html.escape(job.topic)}</b>\n\n"
         f"{script}\n\n"
+        f"{polish_note}{custom_note}"
         "No voice, image, video, music, or rendering credits have been spent yet. "
         "Approve this exact version to start media generation.\n"
         f"{_divider()}"
     )
 
 
+class ProgressBoard:
+    """A live, editable Telegram progress screen for long factory work."""
+
+    def __init__(self, chat_id: int, title: str, steps: list[str]) -> None:
+        self.chat_id = chat_id
+        self.title = title
+        self.steps = list(steps)
+        self.done: set[str] = set()
+        self.message_id: int | None = None
+
+    def _text(self) -> str:
+        lines = [f"⏳ <b>{self.title}</b>", _divider(), ""]
+        for step in self.steps:
+            mark = "✅" if step in self.done else "▫️"
+            lines.append(f"{mark} {step}")
+        lines.append("")
+        lines.append("This screen updates live. Do not close it.")
+        return "\n".join(lines)
+
+    async def start(self) -> None:
+        self.message_id = await send_progress_message(self.chat_id, self._text())
+
+    async def update(self, step: str) -> None:
+        if step in self.done:
+            return
+        self.done.add(step)
+        text = self._text()
+        if self.message_id is not None:
+            await finish_progress_message(self.chat_id, self.message_id, text)
+        else:
+            self.message_id = await send_progress_message(self.chat_id, text)
+
+    async def finish(self, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+        if self.message_id is not None:
+            await finish_progress_message(self.chat_id, self.message_id, text, reply_markup)
+        else:
+            await send_message(self.chat_id, text, reply_markup)
+
+
+async def _draft_script_with_progress(chat_id: int, job_id: str) -> None:
+    """Draft a script in the background behind a live progress screen."""
+    board = ProgressBoard(
+        chat_id,
+        "✨ Writing your script",
+        ["Angle & hook research", "Retention draft", "Editor polish", "Titles, hashtags & cover"],
+    )
+    await board.start()
+    try:
+        job = await asyncio.to_thread(generate_content, job_id)
+    except Exception as exc:
+        logger.exception("Script drafting failed")
+        await board.finish(
+            f"⚠️ Script drafting failed ({html.escape(type(exc).__name__)}). "
+            "Check the script provider status, then create the job again.",
+            _keyboard(),
+        )
+        return
+    try:
+        import json as _json
+
+        metadata = _json.loads(job.metadata_json or "{}")
+        if metadata.get("script_polished"):
+            await board.update("Editor polish")
+        await board.update("Titles, hashtags & cover")
+    except (TypeError, ValueError):
+        pass
+    await board.finish(_script_review_message(job), _job_keyboard(job))
+
+
 async def _generate_assets_and_notify(chat_id: int, job_id: str, version: int) -> None:
+    board = ProgressBoard(
+        chat_id,
+        "🎨 Generating media",
+        ["Narration (voice)", "Scene artwork", "AI video beats", "Cover image", "Music mix"],
+    )
+    await board.start()
     try:
         job = await asyncio.to_thread(generate_assets, job_id, version)
-        await send_message(
-            chat_id,
+        await board.finish(
             "🎨 <b>Media package generated</b>\n"
             "The job is queued for the Railway render worker.\n\n"
             f"{_format_job_card(job)}",
@@ -1070,8 +1170,7 @@ async def _generate_assets_and_notify(chat_id: int, job_id: str, version: int) -
         )
     except Exception as exc:
         logger.exception("Asset generation failed")
-        await send_message(
-            chat_id,
+        await board.finish(
             f"⚠️ Asset generation failed ({html.escape(type(exc).__name__)}). "
             "No automatic retry was started. Review provider status, then use Retry.",
             _keyboard(),
@@ -1232,6 +1331,129 @@ async def _handle_audio_upload(chat_id: int, message: dict[str, Any]) -> None:
         f"{html.escape(str(entry['name']))}\n\n"
         "The first file of each type becomes the default; select another below at any time.",
         _audio_catalog_keyboard(),
+    )
+
+
+async def _download_telegram_document(file_id: str, max_bytes: int) -> bytes:
+    """Download a Telegram file after validating its declared size."""
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise RuntimeError("Telegram bot token is not configured.")
+    async with httpx.AsyncClient(timeout=120) as client:
+        metadata = await client.get(
+            f"https://api.telegram.org/bot{settings.telegram_bot_token}/getFile",
+            params={"file_id": file_id},
+        )
+        metadata.raise_for_status()
+        payload = metadata.json().get("result") or {}
+        file_path = payload.get("file_path")
+        file_size = payload.get("file_size")
+        if isinstance(file_size, int) and file_size > max_bytes:
+            raise ValueError("The uploaded file is too large.")
+        if (
+            not isinstance(file_path, str)
+            or ".." in file_path
+            or not re.fullmatch(r"[A-Za-z0-9_./-]{1,240}", file_path)
+        ):
+            raise RuntimeError("Telegram returned an invalid file path.")
+        response = await client.get(
+            f"https://api.telegram.org/file/bot{settings.telegram_bot_token}/{file_path}"
+        )
+        response.raise_for_status()
+        if len(response.content) > max_bytes:
+            raise ValueError("The uploaded file is too large.")
+        return response.content
+
+
+async def _handle_custom_script(chat_id: int, message: dict[str, Any]) -> None:
+    job_id, version = _pending_custom_script[chat_id]
+    text = str(message.get("text") or "").strip()
+    if text == "/cancel":
+        _pending_custom_script.pop(chat_id, None)
+        await send_message(chat_id, "↩️ Custom script cancelled.", _keyboard())
+        return
+    from .owner_inputs import apply_custom_script
+
+    try:
+        job = apply_custom_script(job_id, version, text)
+    except ValueError as exc:
+        await send_message(
+            chat_id,
+            f"⚠️ {html.escape(str(exc))}\nSend the full script or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    _pending_custom_script.pop(chat_id, None)
+    await send_message(
+        chat_id,
+        _script_review_message(job),
+        _job_keyboard(job),
+    )
+
+
+async def _handle_custom_voice(chat_id: int, message: dict[str, Any]) -> None:
+    job_id, version = _pending_custom_voice[chat_id]
+    media = message.get("voice") or message.get("audio") or message.get("document")
+    if not isinstance(media, dict) or not isinstance(media.get("file_id"), str):
+        await send_message(
+            chat_id,
+            "⚠️ Send an MP3/M4A voice recording, or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    from .owner_inputs import MAX_VOICE_BYTES, apply_custom_voiceover, save_custom_voice
+
+    try:
+        data = await _download_telegram_document(str(media["file_id"]), MAX_VOICE_BYTES)
+        filename = save_custom_voice(Path(get_settings().media_root), job_id, data)
+        job = apply_custom_voiceover(job_id, version, filename)
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        await send_message(
+            chat_id,
+            f"⚠️ Voice-over not saved ({html.escape(type(exc).__name__)}). "
+            "Send an MP3/M4A file under 25 MB, or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    _pending_custom_voice.pop(chat_id, None)
+    await send_message(
+        chat_id,
+        "🎙 <b>Your voice-over is attached.</b>\n"
+        "It replaces provider narration for this job when media generation runs.",
+        _job_keyboard(job),
+    )
+
+
+async def _handle_custom_cover(chat_id: int, message: dict[str, Any]) -> None:
+    job_id, version, platform = _pending_custom_cover[chat_id]
+    media = message.get("photo") or message.get("document")
+    if not isinstance(media, dict) or not isinstance(media.get("file_id"), str):
+        await send_message(
+            chat_id,
+            "⚠️ Send a JPEG image for the cover, or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    from .owner_inputs import MAX_COVER_BYTES, apply_custom_cover, save_custom_cover
+
+    try:
+        data = await _download_telegram_document(str(media["file_id"]), MAX_COVER_BYTES)
+        filename = save_custom_cover(Path(get_settings().media_root), job_id, platform, data)
+        job = apply_custom_cover(job_id, platform, filename)
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        await send_message(
+            chat_id,
+            f"⚠️ Cover not saved ({html.escape(type(exc).__name__)}). "
+            "Send a JPEG under 12 MB, or /cancel.",
+            _back_keyboard(),
+        )
+        return
+    _pending_custom_cover.pop(chat_id, None)
+    await send_message(
+        chat_id,
+        f"🎨 <b>Your {html.escape(platform.title())} cover is set.</b>\n"
+        "It replaces the generated cover when this video is published.",
+        _job_keyboard(job),
     )
 
 
@@ -2616,6 +2838,39 @@ async def handle_update(update: dict[str, Any]) -> None:
         if message and chat_id in _pending_clip_source:
             await _handle_clip_source(chat_id, message, update)
             return
+        if message and chat_id in _pending_custom_script:
+            await _handle_custom_script(chat_id, message)
+            return
+        if message and chat_id in _pending_custom_voice:
+            await _handle_custom_voice(chat_id, message)
+            return
+        if message and chat_id in _pending_custom_cover:
+            await _handle_custom_cover(chat_id, message)
+            return
+        if message and chat_id in _pending_watermark_text:
+            text = str(message.get("text") or "").strip()
+            if text == "/cancel":
+                _pending_watermark_text.discard(chat_id)
+                await send_message(chat_id, "↩️ Watermark text unchanged.", _settings_keyboard())
+                return
+            from .hq import set_watermark_text
+
+            try:
+                saved = set_watermark_text(text)
+            except ValueError as exc:
+                await send_message(
+                    chat_id,
+                    f"⚠️ {html.escape(str(exc))}\nSend the watermark text or /cancel.",
+                    _back_keyboard(),
+                )
+                return
+            _pending_watermark_text.discard(chat_id)
+            await send_message(
+                chat_id,
+                f"🔒 <b>Watermark text set</b>\n{html.escape(saved)}",
+                _settings_keyboard(),
+            )
+            return
         if message and chat_id in _pending_audio_upload:
             await _handle_audio_upload(chat_id, message)
             return
@@ -3932,6 +4187,80 @@ async def handle_update(update: dict[str, Any]) -> None:
                     _job_keyboard(job),
                 )
 
+            elif data.startswith("script_custom:"):
+                parts = data.split(":")
+                if len(parts) != 3 or not parts[2].isdigit():
+                    await send_message(chat_id, "⚠️ Invalid custom script request.", _keyboard())
+                    return
+                job_id, version = parts[1], int(parts[2])
+                _pending_custom_script[chat_id] = (job_id, version)
+                await send_message(
+                    chat_id,
+                    "📝 <b>Send your own script</b>\n\n"
+                    "Paste the full narration as your next message. The storyboard and captions are "
+                    "rebuilt from it, the version is bumped, and no provider credit is spent. "
+                    "Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data.startswith("voice_custom:"):
+                parts = data.split(":")
+                if len(parts) != 3 or not parts[2].isdigit():
+                    await send_message(chat_id, "⚠️ Invalid custom voice request.", _keyboard())
+                    return
+                job_id, version = parts[1], int(parts[2])
+                _pending_custom_voice[chat_id] = (job_id, version)
+                await send_message(
+                    chat_id,
+                    "🎙 <b>Send your own voice-over</b>\n\n"
+                    "Upload an MP3 or M4A recording (max 25 MB). It replaces provider narration "
+                    "for this job. Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data.startswith("cover_custom:"):
+                parts = data.split(":")
+                if len(parts) != 4 or not parts[3].isdigit():
+                    await send_message(chat_id, "⚠️ Invalid custom cover request.", _keyboard())
+                    return
+                job_id, platform, version = parts[1], parts[2], int(parts[3])
+                if platform not in {"youtube", "instagram"}:
+                    await send_message(chat_id, "⚠️ Unsupported cover platform.", _keyboard())
+                    return
+                _pending_custom_cover[chat_id] = (job_id, version, platform)
+                await send_message(
+                    chat_id,
+                    f"🎨 <b>Send your {html.escape(platform.title())} cover</b>\n\n"
+                    "Upload a JPEG image (max 12 MB). It replaces the generated cover for this job. "
+                    "Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data == "watermark:toggle":
+                from .hq import is_watermark_enabled, set_watermark_enabled
+
+                enabled = is_watermark_enabled()
+                set_watermark_enabled(not enabled)
+                await send_message(
+                    chat_id,
+                    (
+                        "🔒 <b>Watermark OFF</b>\nNew videos will not carry the channel credit."
+                        if enabled
+                        else "🔒 <b>Watermark ON</b>\nNew videos carry the channel credit in the top-right corner."
+                    ),
+                    _settings_keyboard(),
+                )
+
+            elif data == "watermark:text":
+                _pending_watermark_text.add(chat_id)
+                await send_message(
+                    chat_id,
+                    "🔒 <b>Set the watermark text</b>\n\n"
+                    "Send the exact text to burn into the top-right corner (max 40 characters, "
+                    "for example your channel handle). Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
             elif data.startswith("approve:"):
                 parts = data.split(":")
                 job_id = parts[1] if len(parts) > 1 else ""
@@ -4569,30 +4898,24 @@ async def handle_update(update: dict[str, Any]) -> None:
             if not topic:
                 await send_message(chat_id, "⚠️ Please provide a topic: /generate &lt;topic&gt;", _keyboard())
                 return
-            progress_message_id = await send_progress_message(
-                chat_id,
-                f"✨ <b>Creating for {html.escape(PUBLISH_TARGETS[get_publish_target()])}…</b>\n"
-                "Writing a reviewable script. Media providers will not run before approval.",
-            )
             update_id = update.get("update_id")
             request_id = f"telegram:{update_id}" if isinstance(update_id, int) else None
             job = create_job(topic, get_publish_target(), request_id=request_id)
             if job.status == "queued" and job.stage == "topic":
-                job = generate_content(job.id)
-                response = _script_review_message(job)
-            else:
-                response = (
+                task = asyncio.create_task(
+                    _draft_script_with_progress(chat_id, job.id)
+                )
+                _track_background_task(task)
+                return
+            await send_message(
+                chat_id,
+                (
                     f"ℹ️ <b>This request was already processed</b>\n{_divider()}\n\n"
                     f"{_format_job_card(job)}\n\n"
                     "No duplicate generation was started."
-                )
-            await finish_progress_message(
-                chat_id,
-                progress_message_id,
-                response,
+                ),
                 _job_keyboard(job),
             )
-            progress_message_id = None
 
         elif text.startswith("/approve "):
             job_id = text[9:].strip()

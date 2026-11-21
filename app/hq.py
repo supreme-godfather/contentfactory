@@ -210,3 +210,35 @@ def set_reel_voice(voice: str) -> str:
         raise ValueError("Unsupported Hindi voice")
     _set("reel_voice", voice)
     return voice
+
+
+# ── Watermark ───────────────────────────────────────────────────────────
+DEFAULT_WATERMARK_TEXT = "@sheoran_studios"
+MAX_WATERMARK_CHARS = 40
+
+
+def is_watermark_enabled() -> bool:
+    value = _get("watermark_enabled")
+    if value is not None:
+        return value == "true"
+    return True
+
+
+def set_watermark_enabled(enabled: bool) -> None:
+    _set("watermark_enabled", str(enabled).lower())
+
+
+def get_watermark_text() -> str:
+    value = _get("watermark_text")
+    if value is None:
+        return DEFAULT_WATERMARK_TEXT
+    clean = " ".join(value.split())[:MAX_WATERMARK_CHARS]
+    return clean or DEFAULT_WATERMARK_TEXT
+
+
+def set_watermark_text(text: str) -> str:
+    clean = " ".join(text.split())[:MAX_WATERMARK_CHARS]
+    if not clean:
+        raise ValueError("Watermark text cannot be empty")
+    _set("watermark_text", clean)
+    return clean

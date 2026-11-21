@@ -40,7 +40,7 @@ async def exchange_instagram_token(short_lived_token: str) -> int | None:
     settings = get_settings()
     if not settings.meta_app_id or not settings.meta_app_secret:
         raise RuntimeError("META_APP_ID and META_APP_SECRET must be configured in Railway")
-    graph_version = settings.instagram_graph_version or "v21.0"
+    graph_version = settings.instagram_graph_version or "v27.0"
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.get(
             f"https://graph.facebook.com/{graph_version}/oauth/access_token",
@@ -94,7 +94,7 @@ def verify_instagram_account() -> dict[str, str]:
     access_token = get_platform_secret("instagram") or settings.instagram_access_token
     if not user_id or not user_id.isdecimal() or not access_token:
         raise RuntimeError("Instagram account ID or access token is not configured")
-    graph_version = settings.instagram_graph_version or "v21.0"
+    graph_version = settings.instagram_graph_version or "v27.0"
     with httpx.Client(timeout=15) as client:
         response = client.get(
             f"https://graph.facebook.com/{graph_version}/{user_id}",

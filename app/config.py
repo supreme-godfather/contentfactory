@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     instagram_enabled: bool = False
     instagram_user_id: str = ""
     instagram_access_token: str = ""
-    instagram_graph_version: str = "v21.0"
+    instagram_graph_version: str = "v27.0"
     meta_app_id: str = ""
     meta_app_secret: str = ""
     reel_profile_name: str = "quiet_wolf_hindi"

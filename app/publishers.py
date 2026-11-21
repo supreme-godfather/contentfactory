@@ -254,7 +254,7 @@ class InstagramPublisher(Publisher):
                     "Configure PUBLIC_BASE_URL and persistent media storage before publishing."
                 ),
             )
-        version = settings.instagram_graph_version or "v21.0"
+        version = settings.instagram_graph_version or "v27.0"
         base = f"https://graph.facebook.com/{version}"
         token = access_token
         caption = (description or title)[:2200]

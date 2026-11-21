@@ -324,6 +324,7 @@ def create_job_assets(
     media_root: Path,
     storyboard: list[dict[str, object]] | None = None,
     thumbnail_prompt: str | None = None,
+    custom_voiceover: str | None = None,
 ) -> dict[str, str]:
     from .provider_credentials import (
         get_provider_for_role,
@@ -420,7 +421,14 @@ def create_job_assets(
             assets["image"] = image.name
     voiceover = media_root / f"{job_id}-voiceover.mp3"
     voiceover.with_suffix(".timing.json").unlink(missing_ok=True)
-    if _generate_role_asset("voice", job_id, topic, script, voiceover):
+    owner_voice = media_root / custom_voiceover if custom_voiceover else None
+    if (
+        owner_voice is not None
+        and owner_voice.is_file()
+        and Path(custom_voiceover).name == custom_voiceover
+    ):
+        assets["voiceover"] = owner_voice.name
+    elif _generate_role_asset("voice", job_id, topic, script, voiceover):
         assets["voiceover"] = voiceover.name
         timing = voiceover.with_suffix(".timing.json")
         if timing.is_file():

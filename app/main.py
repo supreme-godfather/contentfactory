@@ -137,6 +137,70 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "hindi-content-factory"}
 
 
+def _policy_page(title: str, body: str) -> HTMLResponse:
+    return HTMLResponse(
+        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{title} · Content Factory</title>"
+        "<style>body{max-width:780px;margin:48px auto;padding:0 20px;"
+        "font:16px/1.65 system-ui;color:#172033;background:#f7f8fb}"
+        "main{background:#fff;padding:32px;border-radius:18px;box-shadow:0 8px 32px #17203312}"
+        "h1,h2{line-height:1.2}a{color:#175cd3}</style></head>"
+        f"<body><main><h1>{title}</h1><p><strong>Content Factory</strong></p>{body}"
+        "<p><small>Last updated: November 21, 2026</small></p></main></body></html>"
+    )
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_policy() -> HTMLResponse:
+    return _policy_page(
+        "Privacy Policy",
+        "<p>Content Factory is a private, owner-operated content creation and publishing tool. "
+        "It uses Meta account information only to connect the owner's selected Instagram "
+        "Professional account and publish content that the owner explicitly approves.</p>"
+        "<h2>Data we process</h2><p>We may process the Instagram account ID, username, encrypted "
+        "access token, publication metadata, media URLs, and publication results required to "
+        "operate the service.</p>"
+        "<h2>How data is used</h2><p>Data is used only for account verification, approved media "
+        "publishing, status reporting, and troubleshooting. We do not sell personal data.</p>"
+        "<h2>Storage and security</h2><p>Credentials are encrypted at rest, access is restricted "
+        "to the configured owner, and publishing remains approval-gated.</p>"
+        "<h2>Deletion</h2><p>See the <a href='/data-deletion'>User Data Deletion instructions</a>."
+        "</p><h2>Contact</h2><p>Email: sheoranstudios@gmail.com</p>",
+    )
+
+
+@app.get("/data-deletion", response_class=HTMLResponse)
+def data_deletion_instructions() -> HTMLResponse:
+    return _policy_page(
+        "User Data Deletion",
+        "<p>To remove Instagram data stored by Content Factory:</p>"
+        "<ol><li>Open the private Content Factory Telegram bot.</li>"
+        "<li>Open Settings, then Accounts.</li>"
+        "<li>Disconnect the Instagram account and confirm the action.</li>"
+        "<li>Revoke the app under Facebook Settings, Business Integrations if desired.</li></ol>"
+        "<p>You may also request deletion by emailing sheoranstudios@gmail.com with the subject "
+        "<strong>Content Factory Data Deletion</strong>. Include the Instagram username, but do "
+        "not send passwords or access tokens. Requests are verified and completed within 30 days.</p>"
+        "<p>Deletion removes stored Instagram identifiers and encrypted platform credentials. "
+        "Records that must be retained for security, fraud prevention, or legal compliance may "
+        "be retained only for the required period.</p>",
+    )
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_of_service() -> HTMLResponse:
+    return _policy_page(
+        "Terms of Service",
+        "<p>Content Factory is provided for use by its configured owner and authorized agency "
+        "clients. Users are responsible for their source material, account permissions, platform "
+        "compliance, provider charges, and final publication decisions.</p>"
+        "<p>The service is provided as-is without guarantees of views, monetization, availability, "
+        "or income. Generated scripts, media, captions, and metadata require human review before "
+        "publication.</p><p>Contact: sheoranstudios@gmail.com</p>",
+    )
+
+
 @app.get("/ready")
 def ready() -> dict[str, str]:
     """Readiness check that verifies the database, unlike liveness."""
@@ -1062,6 +1126,7 @@ def worker_claim(worker_id: str, _: None = Depends(require_worker_token)) -> dic
             "caption_cues": metadata.get("caption_cues", []),
             "caption_timing_source": metadata.get("caption_timing_source", "estimated"),
             "audio_plan": metadata.get("audio_plan", {}),
+            "watermark": metadata.get("watermark", {}),
             "assets": metadata.get("assets", {}),
             "video_provider": metadata.get("video_provider", "off"),
             "voice_provider": metadata.get("voice_provider", "off"),

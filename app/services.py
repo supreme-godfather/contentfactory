@@ -11,7 +11,7 @@ from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, Wor
 from .google_media import create_job_assets
 from .publishers import get_publisher
 from .quality import validate_content
-from .scriptwriter import build_script
+from .scriptwriter import build_script, build_script_package
 from .storyboard import (
     STYLE_ANCHOR,
     build_storyboard,
@@ -20,6 +20,15 @@ from .storyboard import (
 )
 
 _RENDER_CLAIM_LOCK_ID = 0x48434652434C414D
+
+
+def _watermark_plan() -> dict[str, object]:
+    from .hq import get_watermark_text, is_watermark_enabled
+
+    return {
+        "enabled": is_watermark_enabled(),
+        "text": get_watermark_text(),
+    }
 
 
 def _resolve_job(session, job_id: str) -> ContentJob:
@@ -59,6 +68,57 @@ def _topic_hashtags(topic: str) -> list[str]:
         if len(tags) == 2:
             break
     return tags
+
+
+def _apply_ai_publishing_package(
+    metadata: dict[str, object],
+    package_metadata: dict[str, object],
+    format_key: str,
+) -> dict[str, object]:
+    """Overlay AI-written titles, description, hashtags and cover concept."""
+    if not package_metadata:
+        metadata["title_options"] = [metadata.get("title")]
+        return metadata
+
+    title_variants = [
+        str(item).strip()[:100]
+        for item in (package_metadata.get("title_variants") or [])
+        if str(item).strip()
+    ]
+    if title_variants:
+        metadata["title_options"] = title_variants
+        metadata["title"] = title_variants[0]
+
+    description = str(package_metadata.get("description") or "").strip()
+    hashtags = [
+        str(item).strip()[:40]
+        for item in (package_metadata.get("hashtags") or [])
+        if str(item).strip()
+    ]
+    if description:
+        metadata["description"] = description[:1200]
+    if hashtags:
+        metadata["hashtags"] = hashtags[:12]
+
+    title = str(metadata.get("title") or "")
+    description = str(metadata.get("description") or "")
+    tags = list(metadata.get("tags") or [])
+    metadata["youtube"] = {
+        "title": title[:100],
+        "description": f"{description}\n\n{' '.join(hashtags[:3])}" if hashtags else description,
+        "tags": tags,
+    }
+    metadata["instagram"] = {
+        "caption": (f"{title}\n\n{description}\n\n{' '.join(hashtags)}")[:2200] if hashtags else f"{title}\n\n{description}",
+        "hashtags": hashtags or list(metadata.get("hashtags") or []),
+    }
+    hook_type = str(package_metadata.get("hook_type") or "")[:24]
+    if hook_type:
+        metadata["hook_type"] = hook_type
+    concept = str(package_metadata.get("thumbnail_concept") or "")[:300]
+    if concept:
+        metadata["thumbnail_concept"] = concept
+    return metadata
 
 
 def _build_publish_metadata(
@@ -231,7 +291,7 @@ def create_custom_jobs(
                 else:
                     progress = round((part - 1) / max(count - 1, 1), 2)
                     arc_stage = "build tension and reveal clue" if progress < 0.75 else "late escalation and reversal"
-                stored.script_text = build_script(
+                package = build_script_package(
                     topic,
                     format="reel",
                     custom_instruction=(
@@ -244,6 +304,7 @@ def create_custom_jobs(
                         f" Owner brief: {clean_brief}"
                     ),
                 )
+                stored.script_text = str(package.get("script") or "")
                 storyboard = build_storyboard(topic, stored.script_text)
                 cues = caption_cues(stored.script_text)
                 estimated_seconds = estimate_duration_seconds(stored.script_text)
@@ -302,7 +363,7 @@ def _mark_generation_failed(job_id: str, version: int, stage: str, exc: Exceptio
         session.commit()
 
 
-def generate_content(job_id: str) -> ContentJob:
+def generate_content(job_id: str, facts: str = "") -> ContentJob:
     """Draft the current script package without spending on media providers."""
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)
@@ -341,7 +402,9 @@ def generate_content(job_id: str) -> ContentJob:
         format_key = get_format_key()
         format_info = get_format()
         niche_label = get_niche_label()
-        script = build_script(topic, brand, format=format_key, niche=niche_label)
+        package = build_script_package(topic, brand, format=format_key, niche=niche_label, facts=facts)
+        script = str(package.get("script") or "")
+        package_metadata = package.get("metadata") or {}
         storyboard = build_storyboard(topic, script)
         cues = caption_cues(script)
         estimated_seconds = estimate_duration_seconds(script)
@@ -383,7 +446,11 @@ def generate_content(job_id: str) -> ContentJob:
             "approval_required": True,
             "script_approval_version": None,
             "assets": {},
+            "watermark": _watermark_plan(),
         }
+        metadata = _apply_ai_publishing_package(metadata, package_metadata, format_key)
+        if package.get("critic", {}).get("applied"):
+            metadata["script_polished"] = True
     except Exception as exc:
         _mark_generation_failed(job_id, version, "script", exc)
         raise
@@ -473,6 +540,9 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
     assets: dict[str, str] = {}
     audio_plan: dict[str, object] = {}
     try:
+        from .job_inputs import get_custom_voiceover
+
+        custom_voiceover = get_custom_voiceover(metadata)
         assets = create_job_assets(
             job_id,
             topic,
@@ -480,6 +550,7 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
             media_root,
             storyboard=storyboard if isinstance(storyboard, list) else [],
             thumbnail_prompt=str(metadata.get("thumbnail_prompt") or "") or None,
+            custom_voiceover=custom_voiceover or None,
         )
         from .audio_catalog import get_default_audio_asset
 
