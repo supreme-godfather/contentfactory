@@ -281,7 +281,10 @@ def _script_prompt(
     fmt: str,
     facts: str,
     custom_instruction: str | None,
+    genre: dict[str, str] | None = None,
 ) -> str:
+    from .genres import genre_directives
+
     direction = ""
     if fmt == "reel":
         direction = (
@@ -300,6 +303,7 @@ def _script_prompt(
         f"Format: {fmt}\n"
         f"Length: {budget}\n"
         f"{facts}"
+        f"{genre_directives(genre)}"
         f"{RETAIL_RULES}\n"
         f"Required closing line (exact, nothing after it):\n{CLOSING_LINES}\n"
         f"{direction}{extra}"
@@ -313,6 +317,7 @@ def build_script(
     format: str | None = None,
     niche: str | None = None,
     custom_instruction: str | None = None,
+    genre: dict[str, str] | None = None,
 ) -> str:
     """Return a ready-to-record narration, or the safe template on any failure."""
     fmt, niche_label = _resolve_format_and_niche(format, niche)
@@ -355,7 +360,7 @@ def build_script(
         logger.debug("Provider lookup failed; using template script", exc_info=True)
         return fallback
 
-    prompt = _script_prompt(topic, niche_label, budget, fmt, "", custom_instruction)
+    prompt = _script_prompt(topic, niche_label, budget, fmt, "", custom_instruction, genre)
     try:
         if provider == "gemini":
             response = httpx.post(
@@ -450,6 +455,7 @@ def build_script_package(
     niche: str | None = None,
     custom_instruction: str | None = None,
     facts: str = "",
+    genre: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Draft, critique, and package a script with publishing metadata.
 
@@ -462,7 +468,14 @@ def build_script_package(
     is_long = fmt == "long"
     is_reel = fmt == "reel"
     budget, min_chars = _writer_budget(is_long, is_reel)
-    script = build_script(topic, brand, format=fmt, niche=niche_label, custom_instruction=custom_instruction)
+    script = build_script(
+        topic,
+        brand,
+        format=fmt,
+        niche=niche_label,
+        custom_instruction=custom_instruction,
+        genre=genre,
+    )
     package: dict[str, object] = {
         "script": script,
         "metadata": {},
@@ -489,7 +502,7 @@ def build_script_package(
 
     if script and len(script.strip()) >= min_chars:
         try:
-            prompt = _script_prompt(topic, niche_label, budget, fmt, facts, custom_instruction)
+            prompt = _script_prompt(topic, niche_label, budget, fmt, facts, custom_instruction, genre)
             review = _minimax_chat(
                 api_key,
                 CRITIC_SYSTEM,

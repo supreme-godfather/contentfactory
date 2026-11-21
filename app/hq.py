@@ -242,3 +242,80 @@ def set_watermark_text(text: str) -> str:
         raise ValueError("Watermark text cannot be empty")
     _set("watermark_text", clean)
     return clean
+
+
+# ── Genre selection ────────────────────────────────────────────────────
+GENRE_MODES = ("specific", "shuffle", "random", "auto")
+
+
+def get_genre_mode() -> str:
+    value = _get("genre_mode")
+    return value if value in GENRE_MODES else "auto"
+
+
+def set_genre_mode(mode: str) -> str:
+    if mode not in GENRE_MODES:
+        raise ValueError("Unsupported genre mode")
+    _set("genre_mode", mode)
+    return mode
+
+
+def get_genre_id() -> str:
+    value = _get("genre_id")
+    if not value:
+        return ""
+    from .genres import get_genre
+
+    return value if get_genre(value) else ""
+
+
+def set_genre_id(genre_id: str) -> str:
+    from .genres import get_genre
+
+    if not get_genre(genre_id):
+        raise ValueError("Unknown genre")
+    _set("genre_id", genre_id)
+    return genre_id
+
+
+# ── Auto mode ──────────────────────────────────────────────────────────
+def is_auto_mode_enabled() -> bool:
+    value = _get("auto_mode")
+    return value == "true" if value is not None else False
+
+
+def set_auto_mode_enabled(enabled: bool) -> None:
+    _set("auto_mode", str(enabled).lower())
+
+
+def is_auto_publish_enabled() -> bool:
+    value = _get("auto_publish")
+    return value == "true" if value is not None else False
+
+
+def set_auto_publish_enabled(enabled: bool) -> None:
+    _set("auto_publish", str(enabled).lower())
+
+
+def is_auto_clip_publish_enabled() -> bool:
+    value = _get("auto_clip_publish")
+    return value == "true" if value is not None else False
+
+
+def set_auto_clip_publish_enabled(enabled: bool) -> None:
+    _set("auto_clip_publish", str(enabled).lower())
+
+
+def get_auto_publish_max_cost_usd() -> float:
+    raw = _get("auto_publish_max_cost_usd")
+    try:
+        value = float(raw) if raw is not None else 1.5
+    except (TypeError, ValueError):
+        value = 1.5
+    return max(0.1, min(25.0, value))
+
+
+def set_auto_publish_max_cost_usd(value: float) -> float:
+    clamped = max(0.1, min(25.0, float(value)))
+    _set("auto_publish_max_cost_usd", f"{clamped:.2f}")
+    return clamped

@@ -29,6 +29,36 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### OpenCode — 2026-11-21 (genre library, auto mode, reliability)
+
+- **Task:** Add the genre system, a fully automated pipeline that does not need
+  owner approval, and make the bot faster and more reliable.
+- **Status:** Implemented, tested (250 passed) and deployed to Railway. The
+  production factory now runs automatically: trend research → script → media →
+  render → publish, with the quality gate, daily limit, account binding, pause
+  switch and per-video cost ceiling still enforced. Auto publish for clips
+  remains OFF by default because clips carry third-party source risk.
+- **Genres:** `app/genres.py` holds 48 blueprints (label, category, visual
+  engine, hook style, asset mode, sound cue). Modes are specific, shuffle,
+  random and auto (deterministic topic match). The genre directive is injected
+  into the writer prompt and stored on the job metadata.
+- **Auto mode:** `app/auto_flow.py` resolves the genre and writes a
+  secret-free audit log. Settings live in `app/hq.py` and are readable and
+  writable through `/api/admin/auto/settings`; the genre catalogue is exposed
+  at `/api/admin/genres`. Telegram gained Settings → Auto mode and
+  Studio → Genre library.
+- **Reliability:** all Telegram API calls now retry transient network and 5xx
+  failures with backoff, and long work runs behind a live editable progress
+  screen.
+- **Verification:** `python -m pytest -q` — 250 passed; `compileall` and
+  `git diff --check` passed. Production status: auto mode on, auto publish on,
+  clip auto publish off, ceiling $1.50, genre mode auto, automation on every
+  300 seconds, destination YouTube + Instagram, daily limit 6.
+- **Next action:** Owner should confirm the ElevenLabs key and plan, add
+  licensed BGM/SFX, and review the first automatically published video before
+  raising the daily limit or the cost ceiling. The Git push must be done from a
+  credential that owns `supreme-godfather/contentfactory`.
+
 ### OpenCode — 2026-11-21 (Hindi voice catalogs)
 
 - **Task:** Research and complete voice ID selection for MiniMax, ElevenLabs and

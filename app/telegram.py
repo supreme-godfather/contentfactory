@@ -118,6 +118,7 @@ _pending_custom_script: dict[int, tuple[str, int]] = {}
 _pending_custom_voice: dict[int, tuple[str, int]] = {}
 _pending_custom_cover: dict[int, tuple[str, int, str]] = {}
 _pending_watermark_text: set[int] = set()
+_pending_auto_cost: set[int] = set()
 _pending_icon_slot: dict[int, str] = {}
 _pending_custom_creator: set[int] = set()
 _pending_custom_part_count: dict[int, int] = {}
@@ -197,11 +198,18 @@ def _keyboard() -> dict[str, list[list[dict[str, str]]]]:
 
 
 def _studio_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .hq import get_genre_id, get_genre_mode
+
     return {"inline_keyboard": [
-        [_icon_button("original_creation", "Create topic", "create"), _icon_button("custom_series", "Custom series", "custom_creator")],
-        [_icon_button("trends", "Trending topics", "trends"), _icon_button("automation", "Run automation", "automation:run")],
-        [_icon_button("clip_studio", "Clipping studio", "clip_studio")],
-        [_icon_button("back", "Home", "menu")],
+        [_button("✨ Create topic", "create"), _button("🧠 Custom series", "custom_creator")],
+        [_button("🔥 Trending topics", "trends"), _button("🤖 Run automation", "automation:run")],
+        [_button("🎭 Genre library", "genre:panel")],
+        [_button(
+            f"🎬 {get_genre_mode()} · {(get_genre_id() or 'auto')}",
+            "genre:panel",
+        )],
+        [_button("🎞 Clipping studio", "clip_studio")],
+        [_button("🔙 Home", "menu")],
     ]}
 
 
@@ -246,9 +254,123 @@ def _settings_keyboard() -> dict[str, list[list[dict[str, str]]]]:
         )],
         [_button(f"🔒 Text: {get_watermark_text()}", "watermark:text")],
         [_button("💎 Premium icons", "icon:panel:0")],
+        [_button("🤖 Auto mode", "auto:panel")],
         [_button("⚙️ Advanced controls", "controls")],
         [_button("🔙 Home", "menu")],
     ]}
+
+
+def _genre_message(category: str | None = None) -> str:
+    from .genres import CATEGORY_LABELS, GENRE_CATEGORIES, genres_in_category
+    from .hq import get_genre_id, get_genre_mode
+
+    selected = get_genre_id()
+    mode = get_genre_mode()
+    lines = [
+        "🎭 <b>Genre library</b>",
+        _divider(),
+        "",
+        f"Mode: <b>{mode}</b>",
+        f"Chosen: <b>{selected or 'auto match'}</b>",
+        "",
+        "A genre shapes the hook, the visual engine and the pacing. "
+        "Pick one, shuffle inside a category, or draw at random.",
+    ]
+    if category:
+        lines.extend(["", f"<b>{CATEGORY_LABELS.get(category, category)}</b>"])
+        for genre in genres_in_category(category):
+            mark = "✅ " if genre["id"] == selected else ""
+            lines.append(f"{mark}{genre['label']}")
+    else:
+        lines.extend(["", "<b>Categories</b>"])
+        for name in GENRE_CATEGORIES:
+            lines.append(f"• {CATEGORY_LABELS.get(name, name)}")
+    return "\n".join(lines)
+
+
+def _genre_keyboard(category: str | None = None) -> dict[str, list[list[dict[str, str]]]]:
+    from .genres import CATEGORY_LABELS, GENRE_CATEGORIES, genres_in_category
+    from .hq import get_genre_id
+
+    selected = get_genre_id()
+    rows: list[list[dict[str, str]]] = []
+    if category:
+        for genre in genres_in_category(category):
+            mark = "✅ " if genre["id"] == selected else ""
+            rows.append([_button(f"{mark}{genre['label']}", f"genre_set:{genre['id']}")])
+        rows.append([_button("🎲 Shuffle this category", f"genre_shuffle:{category}")])
+    else:
+        for name in GENRE_CATEGORIES:
+            rows.append([_button(f"{CATEGORY_LABELS.get(name, name)}", f"genre_category:{name}")])
+        rows.append([
+            _button("🎲 Shuffle one", "genre_shuffle:all"),
+            _button("🎰 Random one", "genre_random"),
+        ])
+    rows.append([_button("🔙 Back", "nav:studio" if category else "nav:settings")])
+    return {"inline_keyboard": rows}
+
+
+def _auto_message() -> str:
+    from .auto_flow import recent_automation_events
+    from .hq import (
+        get_auto_publish_max_cost_usd,
+        is_auto_clip_publish_enabled,
+        is_auto_mode_enabled,
+        is_auto_publish_enabled,
+    )
+
+    auto_mode = is_auto_mode_enabled()
+    auto_publish = is_auto_publish_enabled()
+    clip_publish = is_auto_clip_publish_enabled()
+    lines = [
+        "🤖 <b>Automation &amp; auto mode</b>",
+        _divider(),
+        "",
+        f"Auto build (script, media, render): <b>{'ON' if auto_mode else 'OFF'}</b>",
+        f"Auto publish original videos: <b>{'ON' if auto_publish else 'OFF'}</b>",
+        f"Auto publish clips: <b>{'ON' if clip_publish else 'OFF'}</b>",
+        f"Per-video cost ceiling: <b>${get_auto_publish_max_cost_usd():.2f}</b>",
+        "",
+        "Auto mode still respects the quality gate, the daily limit, the account "
+        "binding and the pause switch. Turning the factory off stops everything "
+        "immediately, and every automatic action is logged below.",
+    ]
+    events = recent_automation_events(8)
+    if events:
+        lines.extend(["", "<b>Recent automatic actions</b>"])
+        lines.extend(f"<code>{html.escape(line)}</code>" for line in events)
+    return "\n".join(lines)
+
+
+def _auto_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .hq import (
+        get_auto_publish_max_cost_usd,
+        is_auto_clip_publish_enabled,
+        is_auto_mode_enabled,
+        is_auto_publish_enabled,
+    )
+
+    auto_mode = is_auto_mode_enabled()
+    auto_publish = is_auto_publish_enabled()
+    clip_publish = is_auto_clip_publish_enabled()
+    rows = [
+        [_button(
+            "⏸️ Stop auto build" if auto_mode else "▶️ Start auto build",
+            "auto:mode_off" if auto_mode else "auto:mode_on",
+        )],
+        [_button(
+            "⏸️ Stop auto publish" if auto_publish else "🚀 Start auto publish",
+            "auto:publish_off" if auto_publish else "auto:publish_on",
+        )],
+        [_button(
+            "⏸️ Stop auto clip publish" if clip_publish else "🎞 Start auto clip publish",
+            "auto:clip_off" if clip_publish else "auto:clip_on",
+        )],
+        [_button(f"💵 Ceiling ${get_auto_publish_max_cost_usd():.2f}", "auto:cost")],
+        [_button("🔄 Refresh", "auto:panel")],
+        [_button("🔙 Back", "nav:settings")],
+    ]
+    return {"inline_keyboard": rows}
 
 
 def _navigation_message(section: str) -> str:
@@ -890,21 +1012,41 @@ def _message(chat_id: int, text: str, reply_markup: dict[str, Any] | None = None
     return payload
 
 
+async def _post_telegram(url: str, payload: dict[str, Any] | None = None, files: Any = None) -> httpx.Response:
+    """POST to Telegram with a short retry so a flaky network never loses a message."""
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                if files is None:
+                    response = await client.post(url, json=payload)
+                else:
+                    response = await client.post(url, data=payload, files=files)
+        except httpx.TransportError as exc:
+            last_error = exc
+            await asyncio.sleep(0.5 * (2**attempt))
+            continue
+        if response.status_code >= 500 and attempt < 2:
+            await asyncio.sleep(0.5 * (2**attempt))
+            continue
+        return response
+    raise last_error or RuntimeError("Telegram request failed")
+
+
 async def send_message(chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
     settings = get_settings()
     if not settings.telegram_bot_token:
         return
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(url, json=_message(chat_id, text, reply_markup))
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError:
-            if response.status_code != 400 or not has_custom_icons(reply_markup):
-                raise
-            fallback = unicode_fallback_markup(reply_markup)
-            response = await client.post(url, json=_message(chat_id, text, fallback))
-            response.raise_for_status()
+    response = await _post_telegram(url, _message(chat_id, text, reply_markup))
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError:
+        if response.status_code != 400 or not has_custom_icons(reply_markup):
+            raise
+        fallback = unicode_fallback_markup(reply_markup)
+        response = await _post_telegram(url, _message(chat_id, text, fallback))
+        response.raise_for_status()
 
 
 async def send_progress_message(chat_id: int, text: str) -> int | None:
@@ -912,9 +1054,8 @@ async def send_progress_message(chat_id: int, text: str) -> int | None:
     if not settings.telegram_bot_token:
         return None
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(url, json=_message(chat_id, text))
-        response.raise_for_status()
+    response = await _post_telegram(url, _message(chat_id, text))
+    response.raise_for_status()
     payload = response.json()
     message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
     if not isinstance(message_id, int):
@@ -941,16 +1082,15 @@ async def finish_progress_message(
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(url, json=payload)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError:
-            if response.status_code != 400 or not has_custom_icons(reply_markup):
-                raise
-            payload["reply_markup"] = unicode_fallback_markup(reply_markup)
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
+    response = await _post_telegram(url, payload)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError:
+        if response.status_code != 400 or not has_custom_icons(reply_markup):
+            raise
+        payload["reply_markup"] = unicode_fallback_markup(reply_markup)
+        response = await _post_telegram(url, payload)
+        response.raise_for_status()
 
 
 async def send_photo(chat_id: int, image_path: Path, caption: str) -> None:
@@ -1150,6 +1290,15 @@ async def _draft_script_with_progress(chat_id: int, job_id: str) -> None:
         await board.update("Titles, hashtags & cover")
     except (TypeError, ValueError):
         pass
+    if job.status != "awaiting_script_approval":
+        await board.finish(
+            "🤖 <b>Auto mode took over</b>\n"
+            "The script was approved, media was generated, and the job is queued for the "
+            "render worker. Nothing is published unless auto publish is enabled.\n\n"
+            f"{_format_job_card(job)}",
+            _job_keyboard(job),
+        )
+        return
     await board.finish(_script_review_message(job), _job_keyboard(job))
 
 
@@ -2847,6 +2996,30 @@ async def handle_update(update: dict[str, Any]) -> None:
         if message and chat_id in _pending_custom_cover:
             await _handle_custom_cover(chat_id, message)
             return
+        if message and chat_id in _pending_auto_cost:
+            text = str(message.get("text") or "").strip()
+            if text == "/cancel":
+                _pending_auto_cost.discard(chat_id)
+                await send_message(chat_id, "↩️ Cost ceiling unchanged.", _auto_keyboard())
+                return
+            from .hq import set_auto_publish_max_cost_usd
+
+            try:
+                saved = set_auto_publish_max_cost_usd(float(text.replace("$", "").strip()))
+            except (TypeError, ValueError):
+                await send_message(
+                    chat_id,
+                    "⚠️ Enter a number between 0.10 and 25, for example 1.50.",
+                    _back_keyboard(),
+                )
+                return
+            _pending_auto_cost.discard(chat_id)
+            await send_message(
+                chat_id,
+                f"💵 <b>Cost ceiling set to ${saved:.2f}</b> per video.",
+                _auto_keyboard(),
+            )
+            return
         if message and chat_id in _pending_watermark_text:
             text = str(message.get("text") or "").strip()
             if text == "/cancel":
@@ -4259,6 +4432,94 @@ async def handle_update(update: dict[str, Any]) -> None:
                     "Send the exact text to burn into the top-right corner (max 40 characters, "
                     "for example your channel handle). Send /cancel to stop.",
                     _back_keyboard(),
+                )
+
+            elif data == "auto:panel":
+                await send_message(chat_id, _auto_message(), _auto_keyboard())
+
+            elif data in {"auto:mode_on", "auto:mode_off", "auto:publish_on", "auto:publish_off", "auto:clip_on", "auto:clip_off"}:
+                from .hq import (
+                    set_auto_clip_publish_enabled,
+                    set_auto_mode_enabled,
+                    set_auto_publish_enabled,
+                )
+
+                if data == "auto:mode_on":
+                    set_auto_mode_enabled(True)
+                elif data == "auto:mode_off":
+                    set_auto_mode_enabled(False)
+                elif data == "auto:publish_on":
+                    set_auto_publish_enabled(True)
+                elif data == "auto:publish_off":
+                    set_auto_publish_enabled(False)
+                elif data == "auto:clip_on":
+                    set_auto_clip_publish_enabled(True)
+                else:
+                    set_auto_clip_publish_enabled(False)
+                await send_message(chat_id, _auto_message(), _auto_keyboard())
+
+            elif data == "auto:cost":
+                _pending_auto_cost.add(chat_id)
+                await send_message(
+                    chat_id,
+                    "💵 <b>Set the per-video cost ceiling</b>\n\n"
+                    "Send the maximum provider spend in US dollars for one video, "
+                    "between 0.10 and 25. Example: 1.50. Send /cancel to stop.",
+                    _back_keyboard(),
+                )
+
+            elif data == "genre:panel":
+                await send_message(chat_id, _genre_message(), _genre_keyboard())
+
+            elif data.startswith("genre_category:"):
+                category = data.split(":", 1)[1]
+                await send_message(
+                    chat_id,
+                    _genre_message(category),
+                    _genre_keyboard(category),
+                )
+
+            elif data.startswith("genre_set:"):
+                genre_id = data.split(":", 1)[1]
+                from .hq import set_genre_id, set_genre_mode
+
+                try:
+                    set_genre_id(genre_id)
+                    set_genre_mode("specific")
+                except ValueError:
+                    await send_message(chat_id, "⚠️ Unknown genre.", _genre_keyboard())
+                    return
+                await send_message(
+                    chat_id,
+                    f"🎭 <b>Genre set</b>\n{html.escape(genre_id)}\n\nNew jobs use this genre.",
+                    _genre_keyboard(),
+                )
+
+            elif data.startswith("genre_shuffle:"):
+                from .genres import random_genre
+                from .hq import set_genre_id, set_genre_mode
+
+                category = data.split(":", 1)[1]
+                genre = random_genre(None if category == "all" else category)
+                set_genre_id(genre["id"])
+                set_genre_mode("shuffle")
+                await send_message(
+                    chat_id,
+                    f"🎲 <b>Genre shuffled</b>\n{html.escape(genre['label'])}\n\nNew jobs use this genre.",
+                    _genre_keyboard(),
+                )
+
+            elif data == "genre_random":
+                from .genres import random_genre
+                from .hq import set_genre_id, set_genre_mode
+
+                genre = random_genre()
+                set_genre_id(genre["id"])
+                set_genre_mode("random")
+                await send_message(
+                    chat_id,
+                    f"🎰 <b>Random genre</b>\n{html.escape(genre['label'])}\n\nNew jobs use this genre.",
+                    _genre_keyboard(),
                 )
 
             elif data.startswith("approve:"):

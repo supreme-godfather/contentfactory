@@ -402,7 +402,17 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
         format_key = get_format_key()
         format_info = get_format()
         niche_label = get_niche_label()
-        package = build_script_package(topic, brand, format=format_key, niche=niche_label, facts=facts)
+        from .auto_flow import resolve_genre
+
+        genre, genre_reason = resolve_genre(topic)
+        package = build_script_package(
+            topic,
+            brand,
+            format=format_key,
+            niche=niche_label,
+            facts=facts,
+            genre=genre,
+        )
         script = str(package.get("script") or "")
         package_metadata = package.get("metadata") or {}
         storyboard = build_storyboard(topic, script)
@@ -447,6 +457,8 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
             "script_approval_version": None,
             "assets": {},
             "watermark": _watermark_plan(),
+            "genre": genre,
+            "genre_reason": genre_reason,
         }
         metadata = _apply_ai_publishing_package(metadata, package_metadata, format_key)
         if package.get("critic", {}).get("applied"):
@@ -470,6 +482,25 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
         job.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(job)
+    return _maybe_auto_advance(job, version)
+
+
+def _maybe_auto_advance(job: ContentJob, version: int) -> ContentJob:
+    """Approve the script and build media without owner action in auto mode."""
+    from .auto_flow import record_automation_event
+    from .hq import is_auto_mode_enabled
+
+    if not is_auto_mode_enabled():
+        return job
+    try:
+        approved = approve_script(job.id, 0, version)
+        record_automation_event("auto_approved_script", job.id, f"v{version}")
+        generated = generate_assets(job.id, version)
+        record_automation_event("auto_generated_media", job.id, "queued for render")
+        return generated
+    except Exception as exc:
+        record_automation_event("auto_pipeline_stopped", job.id, type(exc).__name__)
+        logger.warning("Auto pipeline stopped for %s: %s", job.id, exc)
         return job
 
 
@@ -1036,7 +1067,32 @@ def complete_render_job(job_id: str, worker_id: str, render_path: str) -> Conten
         job.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(job)
+    return _maybe_auto_publish(job)
+
+
+def _maybe_auto_publish(job: ContentJob) -> ContentJob:
+    """Publish a rendered job automatically when the owner enabled auto-publish."""
+    from .auto_flow import record_automation_event
+    from .hq import is_auto_publish_enabled
+
+    if not is_auto_publish_enabled():
         return job
+    if job.platform not in {"youtube", "instagram", "both"}:
+        return job
+    try:
+        publish_job(job.id)
+    except ValueError as exc:
+        record_automation_event("auto_publish_blocked", job.id, str(exc)[:160])
+        logger.warning("Auto publish blocked for %s: %s", job.id, exc)
+        return job
+    except Exception as exc:
+        record_automation_event("auto_publish_failed", job.id, type(exc).__name__)
+        logger.warning("Auto publish failed for %s: %s", job.id, exc)
+        return job
+    with SessionLocal() as session:
+        published = session.get(ContentJob, job.id)
+    record_automation_event("auto_published", job.id, f"platform={job.platform}")
+    return published or job
 
 
 def fail_render_job(job_id: str, worker_id: str, error_message: str) -> ContentJob:

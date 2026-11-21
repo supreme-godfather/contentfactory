@@ -121,6 +121,15 @@ class VoiceConfigurationRequest(BaseModel):
     activate: bool = False
 
 
+class AutoSettingsRequest(BaseModel):
+    auto_mode: bool | None = None
+    auto_publish: bool | None = None
+    auto_clip_publish: bool | None = None
+    max_cost_usd: float | None = Field(default=None, ge=0.1, le=25)
+    mode: str | None = Field(default=None, pattern="^(specific|shuffle|random|auto)$")
+    genre_id: str | None = Field(default=None, max_length=80)
+
+
 class TrendRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=240)
     source: str = Field(default="manual", max_length=80)
@@ -787,6 +796,81 @@ def configure_voice_provider(
         "model_id": request.model_id,
         "ready": ready,
         "active": request.activate and ready,
+    }
+
+
+@app.get("/api/admin/auto/settings")
+def read_auto_settings(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .hq import (
+        get_auto_publish_max_cost_usd,
+        get_genre_id,
+        get_genre_mode,
+        is_auto_clip_publish_enabled,
+        is_auto_mode_enabled,
+        is_auto_publish_enabled,
+    )
+
+    return {
+        "auto_mode": is_auto_mode_enabled(),
+        "auto_publish": is_auto_publish_enabled(),
+        "auto_clip_publish": is_auto_clip_publish_enabled(),
+        "max_cost_usd": get_auto_publish_max_cost_usd(),
+        "genre_mode": get_genre_mode(),
+        "genre_id": get_genre_id(),
+    }
+
+
+@app.post("/api/admin/auto/settings")
+def write_auto_settings(
+    request: AutoSettingsRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .hq import (
+        set_auto_clip_publish_enabled,
+        set_auto_mode_enabled,
+        set_auto_publish_enabled,
+        set_auto_publish_max_cost_usd,
+        set_genre_id,
+        set_genre_mode,
+    )
+
+    try:
+        if request.auto_mode is not None:
+            set_auto_mode_enabled(request.auto_mode)
+        if request.auto_publish is not None:
+            set_auto_publish_enabled(request.auto_publish)
+        if request.auto_clip_publish is not None:
+            set_auto_clip_publish_enabled(request.auto_clip_publish)
+        if request.max_cost_usd is not None:
+            set_auto_publish_max_cost_usd(request.max_cost_usd)
+        if request.mode is not None:
+            set_genre_mode(request.mode)
+        if request.genre_id is not None:
+            set_genre_id(request.genre_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return read_auto_settings()
+
+
+@app.get("/api/admin/genres")
+def list_genres(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .genres import CATEGORY_LABELS, GENRE_CATEGORIES, GENRES
+
+    return {
+        "count": len(GENRES),
+        "categories": {
+            name: CATEGORY_LABELS.get(name, name) for name in GENRE_CATEGORIES
+        },
+        "genres": [
+            {
+                "id": genre["id"],
+                "label": genre["label"],
+                "category": genre["category"],
+                "hook": genre["hook"],
+                "asset": genre["asset"],
+            }
+            for genre in GENRES
+        ],
     }
 
 

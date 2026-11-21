@@ -614,8 +614,19 @@ project `contentfactory-pro`:
 - `factory-clipper` is online as a separate unprivileged, outbound-only service
   using pinned `yt-dlp`, `curl-cffi`, FFmpeg, bounded temporary storage, and the
   shared authenticated worker protocol plus per-job lease tokens.
-- The full local suite passes: `243 passed`; compile checks and
+- The full local suite passes: `250 passed`; compile checks and
   `git diff --check` pass.
+- A genre library of 48 blueprints shapes the hook, visual engine and pacing.
+  The owner chooses one genre, shuffles inside a category, draws at random, or
+  lets the engine match the genre to the topic deterministically.
+- **Auto mode** removes the owner from the production loop: the script is
+  approved, media is generated, the video renders, and it publishes when the
+  quality gate passes. Auto publish still obeys the daily limit, the account
+  binding, the pause switch, and a per-video cost ceiling. Clip auto publish
+  stays off by default because clips carry third-party source risk. Every
+  automatic action is written to an audit log visible in Settings → Auto mode.
+- Telegram calls retry on transient network failures, so a flaky connection no
+  longer loses a message or a progress screen.
 - Script quality is now a three-pass pipeline on the cheap MiniMax route: a
   retention draft (hook in the first two seconds, one curiosity loop, pattern
   interrupts every six to eight seconds, breathable Devanagari sentences), a
