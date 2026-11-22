@@ -2567,29 +2567,29 @@ def _series_card_keyboard(series_id: str) -> dict[str, list[list[dict[str, str]]
 
 
 def _build_credits_message() -> str:
-    from .credits import active_series_spend, credit_summary
+    from .credits import active_series_spend, money_summary
 
     try:
-        summary = credit_summary()
+        summary = money_summary()
     except Exception:
         summary = {}
-    if not summary or not summary.get("starting_balance"):
+    if not summary or not summary.get("balance_usd"):
         return (
-            "💳 <b>Higgsfield credits</b>\n"
+            "💳 <b>Higgsfield API balance</b>\n"
             f"{_divider()}\n\n"
-            "  The credit pool is not set yet.\n\n"
-            "  Set the number of credits you have so the factory can budget a batch "
-            "of reels and stop before the pool runs out.\n\n"
-            "  Tap <b>Set credit balance</b> and send the number."
+            "  The API balance is not set yet.\n\n"
+            "  The Higgsfield API is billed separately from the website plan: it runs "
+            "on its own dollar balance, charged per generation.\n\n"
+            "  Tap <b>Set API balance</b> and send the dollar amount on the account."
         )
     lines = [
-        "💳 <b>Higgsfield credits</b>",
+        "💳 <b>Higgsfield API balance</b>",
         _divider(),
         "",
-        f"  Starting balance: <b>{summary['starting_balance']}</b> credits",
-        f"  Spent: <b>{summary['spent']}</b> credits (≈ ${float(summary['cost_usd']):.2f})",
-        f"  Remaining: <b>{summary['remaining']}</b> credits",
-        f"  Cap per series: <b>{summary['series_cap']}</b> credits",
+        f"  Balance: <b>${float(summary['balance_usd']):.2f}</b>",
+        f"  Spent: <b>${float(summary['spent_usd']):.2f}</b>",
+        f"  Remaining: <b>${float(summary['remaining_usd']):.2f}</b>",
+        f"  Cap per series: <b>${float(summary['series_cap_usd']):.2f}</b>",
     ]
     spend = active_series_spend()
     if spend:
@@ -2597,14 +2597,14 @@ def _build_credits_message() -> str:
         for item in spend:
             lines.append(
                 f"  📖 {html.escape(str(item['topic'])[:34])} — "
-                f"{item['credits']}/{item['cap']} credits ({item['status']})"
+                f"${float(item['spent_usd']):.2f}/${float(item['cap_usd']):.2f} ({item['status']})"
             )
     return "\n".join(lines)
 
 
 def _credits_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     return {"inline_keyboard": [
-        [_button("💳 Set credit balance", "credits_set_balance")],
+        [_button("💳 Set API balance", "credits_set_balance")],
         [_button("🎯 Set per-series cap", "credits_set_cap")],
         [_button("🔙 Back", "nav:ops")],
     ]}
@@ -3654,11 +3654,11 @@ async def handle_update(update: dict[str, Any]) -> None:
                 await send_message(
                     chat_id,
                     (
-                        "💳 <b>Set the number of credits</b>\n\n"
-                        "  Send the number of Higgsfield credits you have"
+                        "💳 <b>Set the API balance</b>\n\n"
+                        "  Send the dollar amount on the Higgsfield API account"
                         if data == "credits_set_balance"
                         else "💳 <b>Set the per-series cap</b>\n\n"
-                        "  Send how many credits one story series may use"
+                        "  Send how many dollars one story series may use"
                     ),
                     _back_keyboard(),
                 )
@@ -5187,23 +5187,24 @@ async def handle_update(update: dict[str, Any]) -> None:
             if kind:
                 from .credits import set_series_cap, set_starting_balance
 
-                digits = "".join(char for char in text if char.isdigit())
-                if not digits:
-                    await send_message(chat_id, "⚠️ Send a number of credits.", _credits_keyboard())
+                raw = "".join(char for char in text if char.isdigit() or char == ".")
+                try:
+                    value = float(raw)
+                except ValueError:
+                    await send_message(chat_id, "⚠️ Send a dollar amount, for example 25.", _credits_keyboard())
                     return
-                value = int(digits)
                 if kind == "balance":
                     set_starting_balance(value)
                     await send_message(
                         chat_id,
-                        f"💳 Credit balance set to <b>{value}</b> credits.",
+                        f"💳 API balance set to <b>${value:.2f}</b>.",
                         _credits_keyboard(),
                     )
                 else:
                     set_series_cap(value)
                     await send_message(
                         chat_id,
-                        f"🎯 Per-series cap set to <b>{value}</b> credits.",
+                        f"🎯 Per-series cap set to <b>${value:.2f}</b>.",
                         _credits_keyboard(),
                     )
                 return

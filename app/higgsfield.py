@@ -37,7 +37,7 @@ KLING_IMAGE = "kling-video/v2.6/pro/image-to-video"
 KLING_TEXT = "kling-video/v2.6/pro/text-to-video"
 SOUL_IMAGE = "higgsfield-ai/soul/v2/standard"
 
-# Approximate credit cost per generation, used for the ledger only.
+# Estimated credit cost per generation, used for the ledger only.
 CREDIT_COSTS: dict[str, int] = {
     SEEDANCE_REFERENCE: 23,
     SEEDANCE_IMAGE: 23,
@@ -50,11 +50,58 @@ CREDIT_COSTS: dict[str, int] = {
     SOUL_IMAGE: 4,
 }
 
-RESOLUTION_CREDIT_MULTIPLIER = {"480p": 0.7, "720p": 1.0, "1080p": 2.2, "4k": 4.0}
-
 
 class HiggsfieldError(RuntimeError):
     """A Higgsfield request could not be completed."""
+
+
+# Published API rates in US dollars per second of output. The estimate
+# endpoint is authoritative for the owner's account; these are the fallback.
+MODEL_USD_PER_SECOND: dict[str, float] = {
+    SEEDANCE_REFERENCE: 0.099,
+    SEEDANCE_IMAGE: 0.080,
+    SEEDANCE_TEXT: 0.080,
+    WAN_TEXT: 0.038,
+    WAN_IMAGE: 0.038,
+    WAN_REFERENCE: 0.038,
+    KLING_IMAGE: 0.107,
+    KLING_TEXT: 0.071,
+}
+
+IMAGE_USD: dict[str, float] = {
+    SOUL_IMAGE: 0.0032,
+}
+
+
+def estimate_cost(endpoint: str, payload: dict) -> float:
+    """Ask Higgsfield what one request will cost before it is made.
+
+    The estimate endpoint uses the same body as the generation endpoint and
+    answers with the authoritative price for the authenticated account, so the
+    factory can decide whether a shot fits the budget before it spends.
+    """
+    try:
+        response = httpx.post(
+            f"{base_url()}/estimate/{endpoint}",
+            headers=_headers(),
+            json=payload,
+            timeout=60,
+        )
+        if response.status_code >= 400:
+            raise HiggsfieldError(
+                f"Higgsfield could not estimate {endpoint}: HTTP {response.status_code}"
+            )
+        raw = response.json().get("usd")
+        return float(raw)
+    except (TypeError, ValueError):
+        pass
+    except httpx.HTTPStatusError:
+        raise
+    seconds = int(payload.get("duration") or 5)
+    if endpoint in IMAGE_USD:
+        return IMAGE_USD[endpoint]
+    rate = MODEL_USD_PER_SECOND.get(endpoint, 0.1)
+    return round(rate * seconds, 4)
 
 
 def _credentials() -> tuple[str, str]:
@@ -88,12 +135,14 @@ def public_media_url(filename: str) -> str | None:
     return f"{settings.public_base_url.rstrip('/')}/media/{filename}"
 
 
-def credit_cost(endpoint: str, *, resolution: str = "720p", seconds: int = 5) -> int:
-    """Estimated credits for one generation."""
-    base = CREDIT_COSTS.get(endpoint, 20)
-    multiplier = RESOLUTION_CREDIT_MULTIPLIER.get(resolution, 1.0)
-    duration_factor = max(1, int(round(seconds / 5)))
-    return max(1, round(base * multiplier * duration_factor))
+def credit_cost(endpoint: str, *, resolution: str = "720p", seconds: int = 5) -> float:
+    """Fallback price estimate in US dollars when the estimate call fails."""
+    if endpoint in IMAGE_USD:
+        return IMAGE_USD[endpoint]
+    rate = MODEL_USD_PER_SECOND.get(endpoint, 0.1)
+    if resolution in {"1080p", "4k"}:
+        rate *= 2.2
+    return round(rate * max(1, int(round(seconds / 5))), 4)
 
 
 def _headers() -> dict[str, str]:
@@ -170,14 +219,20 @@ def generate_video(
     destination: Path,
     *,
     timeout_seconds: int = 900,
-) -> int:
-    """Run one Higgsfield video request and return the credits it cost."""
+) -> tuple[float, float]:
+    """Run one Higgsfield video request.
+
+    Returns ``(estimated_usd, spent_usd)`` so the caller can write the real
+    cost into the ledger.
+    """
+    estimated = estimate_cost(endpoint, payload)
     status_url = _submit(endpoint, payload)
     result = _poll(status_url, timeout_seconds=timeout_seconds)
     _download(_result_url(result), destination)
     seconds = int(payload.get("duration") or 5)
     resolution = str(payload.get("resolution") or "720p")
-    return credit_cost(endpoint, resolution=resolution, seconds=seconds)
+    spent = round(MODEL_USD_PER_SECOND.get(endpoint, 0.1) * seconds, 4)
+    return estimated, spent
 
 
 def generate_image(
@@ -186,12 +241,13 @@ def generate_image(
     destination: Path,
     *,
     timeout_seconds: int = 600,
-) -> int:
-    """Run one Higgsfield image request and return the credits it cost."""
+) -> tuple[float, float]:
+    """Run one Higgsfield image request and return (estimated, spent) in USD."""
+    estimated = estimate_cost(endpoint, payload)
     status_url = _submit(endpoint, payload)
     result = _poll(status_url, timeout_seconds=timeout_seconds)
     _download(_result_url(result), destination)
-    return credit_cost(endpoint)
+    return estimated, IMAGE_USD.get(endpoint, 0.0032)
 
 
 def seedance_reference_video(
@@ -206,7 +262,7 @@ def seedance_reference_video(
     aspect_ratio: str = "9:16",
     generate_audio: bool = True,
     timeout_seconds: int = 900,
-) -> int:
+) -> tuple[float, float]:
     """Image (and optional audio) references into a vertical video.
 
     This is the speaking-character path: the character image keeps the face
@@ -241,7 +297,7 @@ def wan_video(
     resolution: str = "720p",
     prompt_extend: bool = True,
     timeout_seconds: int = 900,
-) -> int:
+) -> tuple[float, float]:
     """Text (and optional audio reference) into a video."""
     payload: dict[str, object] = {
         "prompt": prompt[:4000],
@@ -263,7 +319,7 @@ def kling_video(
     resolution: str = "720p",
     generate_audio: bool = True,
     timeout_seconds: int = 900,
-) -> int:
+) -> tuple[float, float]:
     """Kling image-to-video with optional native sound."""
     endpoint = KLING_IMAGE if image_url else KLING_TEXT
     payload: dict[str, object] = {
@@ -285,7 +341,7 @@ def soul_image(
     reference_urls: list[str] | None = None,
     aspect_ratio: str = "9:16",
     timeout_seconds: int = 600,
-) -> int:
+) -> tuple[float, float]:
     """A SOUL character image, optionally guided by reference images."""
     payload: dict[str, object] = {
         "prompt": prompt[:3000],

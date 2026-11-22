@@ -498,7 +498,6 @@ def create_job_assets(
                 raise RuntimeError("Higgsfield video generation requires a configured API key.")
             from .cost import get_unit_prices, record_usage
 
-            credit_price = get_unit_prices()["higgsfield_credit"]
             _generate_higgsfield_scenes(
                 job_id,
                 video_provider,
@@ -510,7 +509,6 @@ def create_job_assets(
                 character_reference,
                 assets.get("voiceover"),
                 record_usage,
-                credit_price,
             )
 
         if image_provider != "off":
@@ -625,7 +623,6 @@ def _generate_higgsfield_scenes(
     character_reference: Path | None,
     voiceover_name: str | None,
     record_usage,
-    credit_price: float,
 ) -> None:
     """Generate the video scenes through Higgsfield and record the credits.
 
@@ -638,6 +635,7 @@ def _generate_higgsfield_scenes(
     - ``higgsfield_kling`` — Kling 2.6 with native sound, no voice-over needed.
     """
     from . import higgsfield
+    from .credits import affordable_shots, money_summary
 
     character_url = None
     if character_reference is not None and character_reference.is_file():
@@ -645,6 +643,27 @@ def _generate_higgsfield_scenes(
     voice_url = None
     if voiceover_name:
         voice_url = higgsfield.public_media_url(voiceover_name)
+
+    endpoint = {
+        "higgsfield_seedance": higgsfield.SEEDANCE_REFERENCE,
+        "higgsfield_wan_audio": higgsfield.WAN_TEXT,
+        "higgsfield_kling": higgsfield.KLING_IMAGE,
+    }.get(video_provider, higgsfield.WAN_TEXT)
+
+    # The balance decides how many shots this reel can have: the factory spends
+    # what it has instead of failing half way through a story.
+    summary = money_summary()
+    remaining = float(summary.get("remaining_usd") or 0.0)
+    price_per_shot = higgsfield.credit_cost(endpoint, resolution="720p", seconds=5)
+    affordable = affordable_shots(remaining, price_per_shot, len(video_scenes))
+    if affordable < len(video_scenes):
+        logger.warning(
+            "The Higgsfield balance only pays for %s of %s shots at $%.2f each",
+            affordable,
+            len(video_scenes),
+            price_per_shot,
+        )
+        video_scenes = tuple(video_scenes[:affordable])
 
     for index in video_scenes:
         if index > len(scene_prompts):
@@ -657,7 +676,7 @@ def _generate_higgsfield_scenes(
                 raise RuntimeError(
                     "The Seedance workflow needs a public character image reference."
                 )
-            credits = higgsfield.seedance_reference_video(
+            estimated, spent = higgsfield.seedance_reference_video(
                 prompt,
                 video,
                 image_urls=[character_url],
@@ -671,7 +690,7 @@ def _generate_higgsfield_scenes(
                 raise RuntimeError(
                     "The Wan audio workflow needs a public dialogue audio reference."
                 )
-            credits = higgsfield.wan_video(
+            estimated, spent = higgsfield.wan_video(
                 prompt,
                 video,
                 audio_url=voice_url,
@@ -679,7 +698,7 @@ def _generate_higgsfield_scenes(
                 resolution="720p",
             )
         elif video_provider == "higgsfield_kling":
-            credits = higgsfield.kling_video(
+            estimated, spent = higgsfield.kling_video(
                 prompt,
                 video,
                 image_url=character_url,
@@ -688,14 +707,14 @@ def _generate_higgsfield_scenes(
                 generate_audio=True,
             )
         else:
-            credits = higgsfield.wan_video(
+            estimated, spent = higgsfield.wan_video(
                 prompt,
                 video,
                 duration=5,
                 resolution="720p",
             )
         assets[f"scene_video_{index}"] = video.name
-        record_usage(job_id, "higgsfield", "credit", credits, "credit", credit_price)
+        record_usage(job_id, "higgsfield", "video", 1, "request", spent)
 
 
 def _scene_template_from_storyboard(storyboard: list[dict[str, object]]) -> dict[str, str] | None:

@@ -511,13 +511,59 @@ treats it as a first-class provider.
   template per part, so six parts do not look like the same scene six times.
   API: `GET /api/scene-templates`.
 
-### Credit budget
+### Two pools, two different things
 
-Higgsfield's own figures: a 60-second reel costs about 240 credits as six
-Kling shots, or 960 at Seedance 2.5 1080p. A 15,000-credit pool is therefore
-roughly 60–150 finished reels, or a 1,200-credit pilot that leaves ~13,800 to
-scale the winning format. The per-series cap (default 400) and the vault
-panel keep the spend visible.
+Higgsfield sells **two separate products**, and this matters before any money
+is spent:
+
+| | Higgsfield **website plan** | Higgsfield **API** |
+|---|---|---|
+| Balance | 15,000 plan credits (your Basic plan) | **$25 in the API account** |
+| What it buys | the studio, the MCP server and the CLI | the REST API, billed per generation in dollars |
+| Used by this factory | **not directly** — only through the `higgsfield` CLI after one interactive sign-in | **yes** — the provider above |
+| Rate | 1 credit per model/config, set by the plan | published per second: Wan 3.0 $0.038/s, Kling 3.0 $0.107/s, Seedance 2.0 reference-to-video $0.099/s, Soul 2 image $0.0032 |
+| Concurrency | plan limits | 2 by default, **10 at ≥$25** in funds added in the last 28 days |
+
+The plan credits cannot be spent through the API, and the API balance cannot be
+paid in plan credits. The API is also far cheaper than the resellers: a 5-second
+Kling clip is **$0.32** through the API against **$2.88** through a credit-pack
+reseller — about 9x.
+
+### What $25 buys
+
+At the published rates, a 5-second shot is $0.19 (Wan 3.0) to $0.54 (Kling 3.0,
+Seedance reference-to-video). A 25-30 second reel of 4-6 shots is therefore
+**$1.20 to $3.00**, so the $25 balance is **8 to 12 finished talking-character
+reels** — a real pilot, not a production line. The factory now prices every
+request before it is made (the `estimate` endpoint returns the authoritative
+price for the account), writes the real price into the cost ledger, and sizes
+each reel to the money that is actually left.
+
+### Money vault
+
+- **`app/credits.py`** — the owner sets the API balance; every generation is
+  recorded with its real dollar cost; a per-series cap (default $5) stops one
+  story draining the balance; the factory refuses to spend an empty balance and
+  reduces the number of shots in a reel when the balance only covers some of
+  them. Telegram: **Operations → 💳 Higgsfield API balance**.
+  API: `GET /api/credits`, `POST /api/credits`.
+- **`app/scene_templates.py` — the scene library.** Thirteen repeatable scenes
+  (boss entry, convoy, auction, palace gate, private jet chai, helipad,
+  golden throne, rain walk, cutting chai, school for my son, back to the
+  village, police station silence, royal baraat entry), each with camera
+  language, prompt skeleton, beats and sound cue. A series assigns one
+  template per part, so six parts do not look like the same scene six times.
+  API: `GET /api/scene-templates`.
+
+### Reaching the 15,000 plan credits
+
+The plan credits are spent by the **Higgsfield CLI** (`npx skills add
+higgsfield-ai/skills`, then `higgsfield auth login`) or the **MCP server**
+(`https://mcp.higgsfield.ai/mcp`). Both connect to the account and spend plan
+credits, and the CLI also has a `soul` skill that trains a character from
+photos. That is the route to the 15,000 credits from an automated pipeline; it
+needs one interactive sign-in by the owner and a persisted session, which is the
+next build.
 
 ## Media quality control, preflight and health (2026-11-22)
 

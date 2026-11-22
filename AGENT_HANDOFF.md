@@ -29,6 +29,41 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### OpenCode — 2026-11-22 (corrected Higgsfield economics: API dollars, not plan credits)
+
+- **Task:** The owner reported only $25 in the Higgsfield API balance while the
+  website plan shows 15,000 credits. Research the billing split and correct the
+  factory accordingly.
+- **Status:** Confirmed with Higgsfield's own documentation, the vault was
+  converted from credits to dollars, deployed (328 tests pass) and set to the
+  owner's real balance ($25, $5 per series).
+- **The split (authoritative):** "A subscription on higgsfield.ai and the API
+  are two separate products with separate billing. Your plan, credits and
+  Unlimited access exist only on the website; the API runs on its own account
+  balance in US dollars." The plan credits are spent by the **web studio, the
+  MCP server (`https://mcp.higgsfield.ai/mcp`) and the CLI**
+  (`npx skills add higgsfield-ai/skills` + `higgsfield auth login`). The API is
+  billed per second of output with published rates.
+- **What $25 buys:** a 5-second shot costs $0.19 (Wan 3.0) to $0.54 (Kling 3.0,
+  Seedance 2.0 reference-to-video $0.099/s), so a 25-30 second reel is $1.20-
+  $3.00 and the balance is **8-12 finished talking-character reels**. The API
+  also unlocks **10 concurrent generations** at ≥$25 in funds added in the last
+  28 days (2 by default).
+- **Cost check for the owner:** the API is ~9x cheaper per clip than the
+  credit-pack resellers ($0.32 vs $2.88 for a 5-second Kling clip), and failed
+  requests are refunded on both the API and the website.
+- **Changes:** `app/credits.py` is now a **dollar** vault (balance, spend per
+  job and series, per-series cap, empty-balance refusal, and
+  `affordable_shots` so a reel is sized to the money left). The provider calls
+  the documented `POST /estimate/{endpoint}` endpoint before every generation
+  and records the real price in the cost ledger. The Telegram panel and the API
+  show dollars.
+- **Next build (the route to the 15,000 credits):** a **CLI bridge** — the
+  `higgsfield` CLI spends plan credits and its `soul` skill can train a
+  character from photos. It needs one interactive sign-in by the owner and a
+  persisted session, then the worker can shell out to it and pull the finished
+  clip from the account's Assets.
+
 ### OpenCode — 2026-11-22 (Higgsfield provider, scene library, credit vault)
 
 - **Task:** Research how sherubhaimaker.com generates its videos and what

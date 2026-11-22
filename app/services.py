@@ -719,13 +719,13 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
         from .cost import enforce_series_budget
 
         enforce_series_budget(str(metadata["series_id"]))
-        from .credits import enforce_series_credit_budget
+        from .credits import enforce_series_money_budget
 
-        enforce_series_credit_budget(str(metadata["series_id"]))
+        enforce_series_money_budget(str(metadata["series_id"]))
     if str(metadata.get("video_provider") or "").startswith("higgsfield"):
-        from .credits import enforce_credit_balance
+        from .credits import enforce_balance
 
-        enforce_credit_balance()
+        enforce_balance()
     try:
         from .job_inputs import get_custom_voiceover
 

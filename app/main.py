@@ -1438,8 +1438,8 @@ class SeriesStatusRequest(BaseModel):
 
 
 class CreditSettingsRequest(BaseModel):
-    starting_balance: int | None = Field(default=None, ge=0, le=1000000)
-    series_cap: int | None = Field(default=None, ge=0, le=100000)
+    starting_balance: float | None = Field(default=None, ge=0, le=100000)
+    series_cap: float | None = Field(default=None, ge=0, le=100000)
 
 
 @app.post("/api/admin/jobs/{job_id}/hook")
@@ -1553,9 +1553,9 @@ def list_packs(_: None = Depends(require_admin_api_token)) -> list[dict[str, obj
 
 @app.get("/api/credits")
 def credit_summary_endpoint(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
-    from .credits import active_series_spend, credit_summary
+    from .credits import active_series_spend, money_summary
 
-    summary = credit_summary()
+    summary = money_summary()
     summary["series"] = active_series_spend()
     return summary
 
@@ -1565,13 +1565,13 @@ def credit_settings_endpoint(
     request: CreditSettingsRequest,
     _: None = Depends(require_admin_api_token),
 ) -> dict[str, object]:
-    from .credits import credit_summary, set_series_cap, set_starting_balance
+    from .credits import money_summary, set_series_cap, set_starting_balance
 
     if request.starting_balance is not None:
         set_starting_balance(request.starting_balance)
     if request.series_cap is not None:
         set_series_cap(request.series_cap)
-    return credit_summary()
+    return money_summary()
 
 
 @app.get("/api/scene-templates")

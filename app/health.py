@@ -161,11 +161,11 @@ def _provider_status() -> dict[str, object]:
 
 
 def _credit_summary_safe() -> dict[str, object]:
-    """The Higgsfield credit vault, if the module is available."""
+    """The Higgsfield money vault, if the module is available."""
     try:
-        from .credits import credit_summary
+        from .credits import money_summary
 
-        return credit_summary()
+        return money_summary()
     except Exception:
         return {}
 

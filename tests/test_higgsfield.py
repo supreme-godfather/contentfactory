@@ -67,7 +67,7 @@ def test_credit_cost_scales_with_resolution_and_length():
         higgsfield.SEEDANCE_REFERENCE, resolution="1080p", seconds=10
     )
 
-    assert base == 23
+    assert base == 0.099
     assert higher > base
 
 
@@ -83,6 +83,7 @@ def test_generate_video_polls_and_downloads(monkeypatch, tmp_path):
 
     monkeypatch.setattr(higgsfield, "_headers", lambda: {"Authorization": "Key a:b"})
     monkeypatch.setattr(higgsfield, "_submit", lambda _endpoint, _payload: "https://status")
+    monkeypatch.setattr(higgsfield, "estimate_cost", lambda _endpoint, _payload: 0.495)
 
     def fake_get(url, headers=None, timeout=None, **_kwargs):
         if url == "https://status":
@@ -92,12 +93,13 @@ def test_generate_video_polls_and_downloads(monkeypatch, tmp_path):
     monkeypatch.setattr(higgsfield.httpx, "get", fake_get)
 
     destination = tmp_path / "scene.mp4"
-    credits = higgsfield.generate_video(
+    estimated, spent = higgsfield.generate_video(
         higgsfield.SEEDANCE_REFERENCE, {"prompt": "x", "duration": 5}, destination
     )
 
     assert destination.read_bytes() == b"video-bytes"
-    assert credits == 23
+    assert estimated == 0.495
+    assert spent > 0
 
 
 def test_failed_request_raises(monkeypatch, tmp_path):
@@ -144,26 +146,21 @@ def test_seedance_payload_carries_the_references(monkeypatch, tmp_path):
     assert captured["payload"]["aspect_ratio"] == "9:16"
 
 
-def test_credit_vault_tracks_spend(monkeypatch):
-    from app.credits import (
-        credit_summary,
-        credits_spent,
-        remaining_balance,
-        set_starting_balance,
-    )
+def test_money_vault_tracks_spend():
+    from app.credits import money_summary, remaining_balance, set_starting_balance
     from app.cost import record_usage
 
-    set_starting_balance(15000)
+    set_starting_balance(25.0)
 
-    record_usage("job-1", "higgsfield", "credit", 23, "credit", 0.0143)
+    record_usage("job-1", "higgsfield", "video", 1, "request", 0.495)
 
-    assert credits_spent() == 23
-    assert remaining_balance() == 15000 - 23
-    assert credit_summary()["spent"] == 23
+    assert money_summary()["spent_usd"] == 0.495
+    assert remaining_balance() == 25.0 - 0.495
+    assert money_summary()["remaining_usd"] == 25.0 - 0.495
 
 
-def test_series_credit_cap_stops_the_series(monkeypatch):
-    from app.credits import enforce_series_credit_budget, set_series_cap
+def test_series_money_cap_stops_the_series():
+    from app.credits import enforce_series_money_budget, set_series_cap
     from app.cost import record_usage
     from app.db import ContentJob, SessionLocal, init_db
 
@@ -180,8 +177,29 @@ def test_series_credit_cap_stops_the_series(monkeypatch):
         session.commit()
         job_id = job.id
 
-    set_series_cap(40)
-    record_usage(job_id, "higgsfield", "credit", 45, "credit", 0.0143)
+    set_series_cap(5.0)
+    record_usage(job_id, "higgsfield", "video", 1, "request", 6.0)
 
     with pytest.raises(ValueError):
-        enforce_series_credit_budget("series-1")
+        enforce_series_money_budget("series-1")
+
+
+def test_estimate_cost_uses_the_estimate_endpoint(monkeypatch):
+    from app import higgsfield
+
+    monkeypatch.setattr(higgsfield, "_headers", lambda: {"Authorization": "Key a:b"})
+    monkeypatch.setattr(
+        higgsfield.httpx,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: _response(200, {"usd": "0.094"}),
+    )
+
+    assert higgsfield.estimate_cost(higgsfield.SOUL_IMAGE, {"prompt": "x"}) == 0.094
+
+
+def test_affordable_shots_counts_what_the_balance_pays_for():
+    from app.credits import affordable_shots
+
+    assert affordable_shots(2.0, 0.5, 6) == 4
+    assert affordable_shots(0.2, 0.5, 6) == 0
+    assert affordable_shots(100.0, 0.5, 6) == 6
