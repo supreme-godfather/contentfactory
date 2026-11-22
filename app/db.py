@@ -4,7 +4,7 @@ import logging
 import time
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, create_engine, event
+from sqlalchemy import DateTime, Float, Integer, String, Text, UniqueConstraint, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -129,6 +129,30 @@ class ProviderCredential(Base):
     provider: Mapped[str] = mapped_column(String(40), primary_key=True)
     secret_encrypted: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class AutomationEvent(Base):
+    __tablename__ = "automation_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class ProviderUsage(Base):
+    __tablename__ = "provider_usage"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    provider: Mapped[str] = mapped_column(String(40), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    units: Mapped[float] = mapped_column(Float, default=0.0)
+    unit: Mapped[str] = mapped_column(String(40), default="count")
+    unit_price_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class PublicationRecord(Base):

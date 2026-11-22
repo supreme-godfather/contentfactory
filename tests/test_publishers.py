@@ -47,7 +47,6 @@ def test_youtube_publisher_uploads_tags_and_custom_thumbnail(tmp_path, monkeypat
         def put(self, url, **kwargs):
             calls.append(("put", url, kwargs))
             return FakeResponse({"id": "video-id"}, status_code=201)
-
         def get(self, url, **kwargs):
             calls.append(("get", url, kwargs))
             return FakeResponse({"items": [{"processingDetails": {"processingStatus": "succeeded"}}]})
@@ -70,6 +69,9 @@ def test_youtube_publisher_uploads_tags_and_custom_thumbnail(tmp_path, monkeypat
     start_call = next(call for call in calls if call[0] == "post" and call[1].endswith("/videos"))
     upload_metadata = json.loads(start_call[2]["content"])
     assert upload_metadata["snippet"]["tags"] == ["Hindi", "Facts"]
+    upload_call = next(call for call in calls if call[0] == "put")
+    assert upload_call[2]["headers"]["Content-Length"] == "2048"
+    assert "Content-Range" not in upload_call[2]["headers"]
     processing_call = next(
         call for call in calls
         if call[0] == "get" and call[1].endswith("/youtube/v3/videos")

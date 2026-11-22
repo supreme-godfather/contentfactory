@@ -312,6 +312,7 @@ def _genre_keyboard(category: str | None = None) -> dict[str, list[list[dict[str
 
 def _auto_message() -> str:
     from .auto_flow import recent_automation_events
+    from .cost import spend_summary
     from .hq import (
         get_auto_publish_max_cost_usd,
         is_auto_clip_publish_enabled,
@@ -322,6 +323,7 @@ def _auto_message() -> str:
     auto_mode = is_auto_mode_enabled()
     auto_publish = is_auto_publish_enabled()
     clip_publish = is_auto_clip_publish_enabled()
+    spend = spend_summary(30)
     lines = [
         "🤖 <b>Automation &amp; auto mode</b>",
         _divider(),
@@ -330,6 +332,8 @@ def _auto_message() -> str:
         f"Auto publish original videos: <b>{'ON' if auto_publish else 'OFF'}</b>",
         f"Auto publish clips: <b>{'ON' if clip_publish else 'OFF'}</b>",
         f"Per-video cost ceiling: <b>${get_auto_publish_max_cost_usd():.2f}</b>",
+        f"Provider spend (30 days): <b>${float(spend.get('total_usd', 0.0)):.2f}</b> "
+        f"across {spend.get('jobs', 0)} jobs",
         "",
         "Auto mode still respects the quality gate, the daily limit, the account "
         "binding and the pause switch. Turning the factory off stops everything "
@@ -2690,7 +2694,9 @@ def _build_instagram_setup_message(step: int = 1) -> str:
             "Create an app in Meta for Developers. Add the Instagram Graph API "
             "product and connect your Facebook Page and Instagram Professional "
             "account. Request <code>instagram_basic</code>, "
-            "<code>instagram_content_publish</code>, and "
+            "<code>instagram_content_publish</code>, "
+            "<code>instagram_manage_media</code> (needed to remove or delete "
+            "published posts), and "
             "<code>pages_read_engagement</code> permissions.\n\n"
             "In Railway → contentfactory API → Variables, add "
             "<code>META_APP_ID</code> and <code>META_APP_SECRET</code> from this "

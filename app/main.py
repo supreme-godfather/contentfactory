@@ -12,6 +12,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from .automation import automation_enabled, automation_loop, run_automation_cycle, set_automation_enabled
+from .auto_flow import asset_pipeline_loop, create_trend_batch, publish_retry_loop
 from .backups import create_backup_archive, restore_backup_archive
 from .config import get_settings
 from .db import ClipCandidate, ContentJob, SessionLocal, init_db
@@ -49,12 +50,14 @@ async def lifespan(_: FastAPI):
         else configure_webhook()
     )
     automation_task = asyncio.create_task(automation_loop())
+    asset_task = asyncio.create_task(asset_pipeline_loop())
+    retry_task = asyncio.create_task(publish_retry_loop())
     try:
         yield
     finally:
-        for task in (telegram_task, automation_task):
+        for task in (telegram_task, automation_task, asset_task, retry_task):
             task.cancel()
-        for task in (telegram_task, automation_task):
+        for task in (telegram_task, automation_task, asset_task, retry_task):
             try:
                 await task
             except asyncio.CancelledError:
@@ -126,8 +129,10 @@ class AutoSettingsRequest(BaseModel):
     auto_publish: bool | None = None
     auto_clip_publish: bool | None = None
     max_cost_usd: float | None = Field(default=None, ge=0.1, le=25)
+    daily_limit: int | None = Field(default=None, ge=1, le=100)
     mode: str | None = Field(default=None, pattern="^(specific|shuffle|random|auto)$")
     genre_id: str | None = Field(default=None, max_length=80)
+    publish_target: str | None = Field(default=None, pattern="^(instagram|youtube|both)$")
 
 
 class TrendRequest(BaseModel):
@@ -262,6 +267,7 @@ def public_media(filename: str) -> FileResponse:
 def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
     settings = get_settings()
     from .hq import get_publish_target, is_mock_publishing
+    from .platform_credentials import get_platform_secret as _platform_secret
     from .platform_credentials import platform_enabled
     from .provider_credentials import (
         get_provider_for_role,
@@ -282,6 +288,10 @@ def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
         "media_generation_enabled": media_generation_enabled(),
         "no_paid_providers": no_paid_providers_enabled(),
         "video_provider": get_provider_for_role("video"),
+        "platform_credentials": {
+            "instagram": bool(_platform_secret("instagram")),
+            "youtube": bool(_platform_secret("youtube")),
+        },
         "provider_roles": {
             role: get_provider_for_role(role)
             for role in ("script", "image", "voice", "video")
@@ -450,6 +460,22 @@ async def youtube_callback(
 
 @app.get("/api/jobs")
 def jobs(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    from .db import PublicationRecord
+
+    with SessionLocal() as session:
+        records = list(
+            session.scalars(
+                select(PublicationRecord).order_by(PublicationRecord.created_at.desc()).limit(200)
+            )
+        )
+        publications: dict[str, list[dict[str, object]]] = {}
+        for record in records:
+            publications.setdefault(record.job_id, []).append({
+                "platform": record.platform,
+                "status": record.status,
+                "remote_url": record.remote_url,
+                "error": record.error_message,
+            })
     return [
         {
             "id": job.id,
@@ -467,9 +493,26 @@ def jobs(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
             "stage": job.stage,
             "render_path": job.render_path,
             "error_message": job.error_message,
+            "publications": publications.get(job.id, []),
             "asset_keys": sorted(
                 json.loads(job.metadata_json or "{}").get("assets", {}).keys()
             ) if job.metadata_json else [],
+            "thumbnails": (
+                json.loads(job.metadata_json or "{}").get("thumbnails", {})
+                if job.metadata_json
+                else {}
+            ),
+            "render_present": bool(
+                job.render_path
+                and (Path(get_settings().media_root).resolve() / Path(job.render_path).name).is_file()
+            ),
+            "cover_files_present": {
+                platform: (Path(get_settings().media_root).resolve() / name).is_file()
+                for platform, name in (
+                    json.loads(job.metadata_json or "{}").get("thumbnails", {}) or {}
+                ).items()
+                if isinstance(name, str) and Path(name).name == name
+            },
             "video_provider": json.loads(job.metadata_json or "{}").get(
                 "video_provider", "off"
             ) if job.metadata_json else "off",
@@ -733,6 +776,103 @@ def clear_queues(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/admin/jobs/{job_id}/publish")
+def admin_publish_job(
+    job_id: str,
+    platforms: str = "",
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    """Publish an approved job, optionally to a subset of platforms."""
+    from .services import publish_job
+
+    only = [item for item in platforms.split(",") if item.strip()]
+    try:
+        job = publish_job(job_id, only_platforms=only or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": job.id, "status": job.status}
+
+
+@app.post("/api/admin/automation/batch")
+def automation_batch(
+    background_tasks: BackgroundTasks,
+    count: int = 10,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    """Start a batch of videos from live trending topics.
+
+    The work runs in the background because each script and media step takes
+    longer than an HTTP request may last.
+    """
+    background_tasks.add_task(create_trend_batch, max(1, min(30, count)))
+    return {"requested": max(1, min(30, count)), "started": True}
+
+
+@app.get("/api/admin/automation/batch")
+def automation_batch_status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .auto_flow import recent_automation_events
+
+    return {"events": recent_automation_events(20)}
+
+
+@app.get("/api/admin/publications")
+def list_publications(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    from .db import PublicationRecord
+
+    with SessionLocal() as session:
+        records = list(
+            session.scalars(
+                select(PublicationRecord).order_by(PublicationRecord.created_at.desc()).limit(200)
+            )
+        )
+    return [
+        {
+            "job_id": record.job_id,
+            "platform": record.platform,
+            "status": record.status,
+            "remote_id": record.remote_id,
+            "remote_url": record.remote_url,
+            "error": (record.error_message or "")[:200],
+        }
+        for record in records
+    ]
+
+
+@app.post("/api/admin/content/reset")
+def reset_content(_: None = Depends(require_admin_api_token)) -> dict[str, int]:
+    from .maintenance import reset_factory_content
+
+    return reset_factory_content()
+
+
+@app.post("/api/admin/publications/delete-all")
+def delete_published_content(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .maintenance import delete_all_published_content
+
+    return delete_all_published_content()
+
+
+@app.post("/api/admin/queues/clear-backlog")
+def clear_queue_backlog(_: None = Depends(require_admin_api_token)) -> dict[str, int]:
+    from .maintenance import clear_script_review_backlog
+
+    return clear_script_review_backlog()
+
+
+@app.post("/api/admin/queues/clear-broken")
+def clear_broken_jobs(_: None = Depends(require_admin_api_token)) -> dict[str, int]:
+    from .maintenance import clear_broken_rendered_jobs
+
+    return clear_broken_rendered_jobs()
+
+
+@app.get("/api/admin/costs")
+def cost_summary(days: int = 30, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .cost import spend_summary
+
+    return spend_summary(max(1, min(365, days)))
+
+
 @app.post("/api/admin/publishing/state")
 def set_publishing_state(
     request: PublishingStateRequest,
@@ -843,10 +983,18 @@ def write_auto_settings(
             set_auto_clip_publish_enabled(request.auto_clip_publish)
         if request.max_cost_usd is not None:
             set_auto_publish_max_cost_usd(request.max_cost_usd)
+        if request.daily_limit is not None:
+            from .hq import set_daily_publish_limit
+
+            set_daily_publish_limit(request.daily_limit)
         if request.mode is not None:
             set_genre_mode(request.mode)
         if request.genre_id is not None:
             set_genre_id(request.genre_id)
+        if request.publish_target is not None:
+            from .hq import set_publish_target
+
+            set_publish_target(request.publish_target)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return read_auto_settings()

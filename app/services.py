@@ -570,6 +570,9 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
     media_root = Path(get_settings().media_root)
     assets: dict[str, str] = {}
     audio_plan: dict[str, object] = {}
+    from .cost import enforce_cost_ceiling
+
+    enforce_cost_ceiling(job_id, metadata, script)
     try:
         from .job_inputs import get_custom_voiceover
 
@@ -843,7 +846,7 @@ def requeue_failed_jobs(max_retries: int) -> int:
     return count
 
 
-def publish_job(job_id: str) -> ContentJob:
+def publish_job(job_id: str, only_platforms: list[str] | None = None) -> ContentJob:
     settings = get_settings()
     with SessionLocal() as session:
         job = _resolve_job(session, job_id)
@@ -862,6 +865,15 @@ def publish_job(job_id: str) -> ContentJob:
         if not report.passed:
             raise ValueError(f"Quality gate blocked publication: {', '.join(report.blockers)}")
         platforms = ["youtube", "instagram"] if job.platform == "both" else [job.platform]
+        if only_platforms:
+            allowed = {
+                item.strip().lower()
+                for item in only_platforms
+                if item.strip().lower() in {"youtube", "instagram"}
+            }
+            platforms = [item for item in platforms if item in allowed]
+            if not platforms:
+                raise ValueError("No requested platform is valid for this job")
         metadata = json.loads(job.metadata_json or "{}")
         youtube_metadata = metadata.get("youtube") or {}
         instagram_metadata = metadata.get("instagram") or {}
@@ -1080,6 +1092,8 @@ def _maybe_auto_publish(job: ContentJob) -> ContentJob:
     if job.platform not in {"youtube", "instagram", "both"}:
         return job
     try:
+        if job.status == "awaiting_approval":
+            job = approve_job(job.id, 0, job.content_version)
         publish_job(job.id)
     except ValueError as exc:
         record_automation_event("auto_publish_blocked", job.id, str(exc)[:160])

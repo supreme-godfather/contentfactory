@@ -11,8 +11,29 @@ from .platform_credentials import get_platform_secret, get_platform_value
 from .youtube_oauth import get_valid_access_token
 
 # Instagram container polling — module constants so tests can speed them up.
-INSTAGRAM_POLL_INTERVAL_SECONDS = 3
-INSTAGRAM_MAX_POLLS = 10
+INSTAGRAM_POLL_INTERVAL_SECONDS = 5
+INSTAGRAM_MAX_POLLS = 36
+
+
+def _api_error_detail(response: httpx.Response | None) -> str:
+    """Extract a short, safe explanation from a platform error response."""
+    if response is None:
+        return "no response"
+    try:
+        payload = response.json()
+    except ValueError:
+        return (response.text or f"HTTP {response.status_code}")[:200]
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            reason = str(error.get("type") or "").strip()
+            detail = ": ".join(part for part in (message, reason) if part)
+            if detail:
+                return detail[:200]
+        if isinstance(error, str) and error.strip():
+            return error.strip()[:200]
+    return (response.text or f"HTTP {response.status_code}")[:200]
 
 
 @dataclass(frozen=True)
@@ -113,31 +134,68 @@ class YouTubePublisher(Publisher):
                     },
                     content=json.dumps(metadata),
                 )
-                start.raise_for_status()
+                if start.status_code >= 400:
+                    detail = _api_error_detail(start)
+                    return PublicationResult(
+                        status="blocked",
+                        detail=f"YouTube rejected the upload: {detail}",
+                    )
                 upload_url = start.headers.get("Location")
                 if not upload_url:
                     return PublicationResult(status="blocked", detail="YouTube did not provide an upload URL.")
+                total_size = path.stat().st_size
+                response = None
                 with path.open("rb") as media:
-                    response = None
-                    while True:
-                        chunk = media.read(8 * 1024 * 1024)
-                        if not chunk:
-                            break
-                        response = client.put(
-                            upload_url,
-                            headers={
-                                "Authorization": f"Bearer {token}",
-                                "Content-Type": "video/mp4",
-                                "Content-Length": str(len(chunk)),
-                            },
-                            content=chunk,
+                    body = media.read()
+                    sent = len(body)
+                    response = client.put(
+                        upload_url,
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "video/mp4",
+                            "Content-Length": str(sent),
+                        },
+                        content=body,
+                    )
+                    if response.status_code not in {200, 201, 308}:
+                        detail = _api_error_detail(response)
+                        return PublicationResult(
+                            status="blocked",
+                            detail=f"YouTube rejected the upload: {detail}",
                         )
-                        if response.status_code not in {200, 201, 308}:
-                            response.raise_for_status()
-                        if response.status_code in {200, 201}:
-                            break
+                    if response.status_code not in {200, 201}:
+                        # Fall back to a chunked resumable upload.
+                        media.seek(0)
+                        sent = 0
+                        while True:
+                            chunk = media.read(8 * 1024 * 1024)
+                            if not chunk:
+                                break
+                            sent += len(chunk)
+                            response = client.put(
+                                upload_url,
+                                headers={
+                                    "Authorization": f"Bearer {token}",
+                                    "Content-Type": "video/mp4",
+                                    "Content-Length": str(len(chunk)),
+                                    "Content-Range": f"bytes {sent - len(chunk)}-{sent - 1}/{total_size}",
+                                },
+                                content=chunk,
+                            )
+                            if response.status_code not in {200, 201, 308}:
+                                detail = _api_error_detail(response)
+                                return PublicationResult(
+                                    status="blocked",
+                                    detail=f"YouTube rejected the upload: {detail}",
+                                )
+                            if response.status_code in {200, 201}:
+                                break
                 if response is None or response.status_code not in {200, 201}:
-                    return PublicationResult(status="blocked", detail="YouTube upload did not complete.")
+                    detail = _api_error_detail(response) if response is not None else "no response"
+                    return PublicationResult(
+                        status="blocked",
+                        detail=f"YouTube upload did not complete: {detail}",
+                    )
                 payload = response.json()
                 video_id = payload.get("id")
                 if not video_id:
@@ -303,7 +361,13 @@ class InstagramPublisher(Publisher):
                     if INSTAGRAM_POLL_INTERVAL_SECONDS > 0:
                         time.sleep(INSTAGRAM_POLL_INTERVAL_SECONDS)
                 if not finished:
-                    return PublicationResult(status="blocked", detail="Instagram media container did not finish processing in time.")
+                    return PublicationResult(
+                        status="blocked",
+                        detail=(
+                            "Instagram media container did not finish processing in time. "
+                            "The Reel is usually published a moment later; retry the publish."
+                        ),
+                    )
                 publish_resp = client.post(
                     f"{base}/{user_id}/media_publish",
                     headers={"Authorization": f"Bearer {token}"},

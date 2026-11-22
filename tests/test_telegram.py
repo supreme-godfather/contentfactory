@@ -1013,10 +1013,9 @@ class TestMessageBuilders:
             assets = create_job_assets("job", "topic", "script", tmp_path)
 
         assert assets == {
-            "image": "job-scene-1.png",
-            "voiceover": "job-voiceover.mp3",
-        }
-        mock_image.assert_called_once()
+            f"scene_{index}": f"job-scene-{index}.png" for index in range(1, 7)
+        } | {"voiceover": "job-voiceover.mp3"}
+        assert mock_image.call_count == 6
         mock_openai.assert_called_once_with(
             "job",
             "topic",
@@ -1385,16 +1384,17 @@ class TestMessageBuilders:
         ):
             assets = create_job_assets("job", "topic", "script", tmp_path)
 
-        assert assets == {"image": "job-scene-1.png"}
-        mock_cooldown.assert_called_once_with("google", quota_error)
-        mock_openai.assert_called_once_with(
+        assert assets == {
+            f"scene_{index}": f"job-scene-{index}.png" for index in range(1, 7)
+        }
+        assert mock_cooldown.call_count == 6
+        assert mock_cooldown.call_args.args == ("google", quota_error)
+        assert mock_openai.call_count == 6
+        assert mock_openai.call_args.args == (
             "job",
             "topic",
             "script",
             tmp_path,
-            generate_image=True,
-            generate_voice=False,
-            image_prompt=None,
         )
 
     def test_image_generation_does_not_fail_over_on_permission_error(self, tmp_path):

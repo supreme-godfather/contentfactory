@@ -339,86 +339,110 @@ def create_job_assets(
     media_root.mkdir(parents=True, exist_ok=True)
     assets: dict[str, str] = {}
     image_provider = get_provider_for_role("image")
-    if image_provider == "huggingface":
-        if no_paid_providers_enabled():
-            raise RuntimeError(
-                "FLUX image generation is blocked while no-paid mode is ON. "
-                "Disable no-paid mode to use the configured GPU endpoint."
-            )
-        if not provider_status().get("huggingface"):
-            raise RuntimeError("FLUX image generation requires a Hugging Face access token.")
-        from .provider_credentials import get_huggingface_image_endpoint
+    video_provider = get_provider_for_role("video")
+    scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
+    generated: list[Path] = []
+    try:
+        # Expensive provider video is reserved for the hook and the payoff beat.
+        video_scenes = (1, 5) if len(scene_prompts) >= 5 else (1,)
+        if video_provider == "minimax":
+            if no_paid_providers_enabled():
+                raise RuntimeError(
+                    "MiniMax video generation is blocked while no-paid mode is ON."
+                )
+            if not provider_status().get("minimax"):
+                raise RuntimeError("MiniMax video generation requires a configured API key.")
+            from .cost import get_unit_prices, record_usage
 
-        if not get_huggingface_image_endpoint():
-            raise RuntimeError("FLUX image generation requires a Hugging Face Inference Endpoint URL.")
-        scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
-        generated_images = []
-        try:
-            for index, prompt in enumerate(scene_prompts, start=1):
-                image = media_root / f"{job_id}-scene-{index}.png"
-                generated_images.append(image)
-                try:
-                    generate_huggingface_image(prompt, image)
-                except httpx.HTTPStatusError as exc:
-                    from .provider_credentials import (
-                        is_provider_quota_error,
-                        mark_provider_quota_error,
+            price = get_unit_prices()["minimax_video_per_second"]
+            for index in video_scenes:
+                video = media_root / f"{job_id}-scene-video-{index}.mp4"
+                generated.append(video)
+                generate_minimax_video(scene_prompts[index - 1], video)
+                assets[f"scene_video_{index}"] = video.name
+                record_usage(job_id, "minimax", "video", 5, "second", price)
+        elif video_provider == "higgsfield":
+            if no_paid_providers_enabled():
+                raise RuntimeError(
+                    "Higgsfield video generation is blocked while no-paid mode is ON."
+                )
+            if not provider_status().get("higgsfield"):
+                raise RuntimeError("Higgsfield video generation requires a configured API key.")
+            from .cost import get_unit_prices, record_usage
+
+            price = get_unit_prices()["higgsfield_video_per_second"]
+            for index in video_scenes:
+                video = media_root / f"{job_id}-scene-video-{index}.mp4"
+                generated.append(video)
+                generate_higgsfield_video(scene_prompts[index - 1], video)
+                assets[f"scene_video_{index}"] = video.name
+                record_usage(job_id, "higgsfield", "video", 5, "second", price)
+
+        if image_provider != "off":
+            from .cost import get_unit_prices, record_usage
+
+            prices = get_unit_prices()
+            image_price = {
+                "minimax": prices["minimax_image"],
+                "google": prices["google_image"],
+                "openai": prices["openai_image"],
+                "huggingface": prices["minimax_image"],
+            }.get(image_provider, 0.0)
+            if image_provider == "huggingface":
+                if no_paid_providers_enabled():
+                    raise RuntimeError(
+                        "FLUX image generation is blocked while no-paid mode is ON. "
+                        "Disable no-paid mode to use the configured GPU endpoint."
                     )
+                if not provider_status().get("huggingface"):
+                    raise RuntimeError("FLUX image generation requires a Hugging Face access token.")
+                from .provider_credentials import get_huggingface_image_endpoint
 
-                    if is_provider_quota_error(exc):
-                        until = mark_provider_quota_error("huggingface", exc)
-                        logger.warning(
-                            "Hugging Face quota/rate limit reached; cooling down until %s",
-                            until.isoformat(),
+                if not get_huggingface_image_endpoint():
+                    raise RuntimeError(
+                        "FLUX image generation requires a Hugging Face Inference Endpoint URL."
+                    )
+            for index, prompt in enumerate(scene_prompts, start=1):
+                if f"scene_video_{index}" in assets:
+                    continue
+                image = media_root / f"{job_id}-scene-{index}.png"
+                generated.append(image)
+                if image_provider == "huggingface":
+                    try:
+                        generate_huggingface_image(prompt, image)
+                    except httpx.HTTPStatusError as exc:
+                        from .provider_credentials import (
+                            is_provider_quota_error,
+                            mark_provider_quota_error,
                         )
-                    raise
-                assets[f"scene_{index}"] = image.name
-        except Exception:
-            for image in generated_images:
-                image.unlink(missing_ok=True)
-            raise
-    elif get_provider_for_role("video") == "minimax":
-        if no_paid_providers_enabled():
-            raise RuntimeError(
-                "MiniMax video generation is blocked while no-paid mode is ON."
-            )
-        if not provider_status().get("minimax"):
-            raise RuntimeError("MiniMax video generation requires a configured API key.")
-        scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
-        generated_videos = []
-        try:
-            for index, prompt in enumerate(scene_prompts, start=1):
-                video = media_root / f"{job_id}-scene-video-{index}.mp4"
-                generated_videos.append(video)
-                generate_minimax_video(prompt, video)
-                assets[f"scene_video_{index}"] = video.name
-        except Exception:
-            for video in generated_videos:
-                video.unlink(missing_ok=True)
-            raise
-    elif get_provider_for_role("video") == "higgsfield":
-        if no_paid_providers_enabled():
-            raise RuntimeError(
-                "Higgsfield video generation is blocked while no-paid mode is ON."
-            )
-        if not provider_status().get("higgsfield"):
-            raise RuntimeError("Higgsfield video generation requires a configured API key.")
-        scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
-        generated_videos = []
-        try:
-            for index, prompt in enumerate(scene_prompts, start=1):
-                video = media_root / f"{job_id}-scene-video-{index}.mp4"
-                generated_videos.append(video)
-                generate_higgsfield_video(prompt, video)
-                assets[f"scene_video_{index}"] = video.name
-        except Exception:
-            for video in generated_videos:
-                video.unlink(missing_ok=True)
-            raise
-    else:
-        image = media_root / f"{job_id}-scene-1.png"
-        if _generate_role_asset("image", job_id, topic, script, image):
-            assets["image"] = image.name
+
+                        if is_provider_quota_error(exc):
+                            until = mark_provider_quota_error("huggingface", exc)
+                            logger.warning(
+                                "Hugging Face quota/rate limit reached; cooling down until %s",
+                                until.isoformat(),
+                            )
+                        raise
+                    assets[f"scene_{index}"] = image.name
+                    record_usage(job_id, image_provider, "image", 1, "image", image_price)
+                    continue
+                if _generate_role_asset(
+                    "image",
+                    job_id,
+                    topic,
+                    script,
+                    image,
+                    prompt_override=prompt,
+                ):
+                    assets[f"scene_{index}"] = image.name
+                    record_usage(job_id, image_provider, "image", 1, "image", image_price)
+                else:
+                    image.unlink(missing_ok=True)
+    except Exception:
+        for path in generated:
+            path.unlink(missing_ok=True)
+        raise
+
     voiceover = media_root / f"{job_id}-voiceover.mp3"
     voiceover.with_suffix(".timing.json").unlink(missing_ok=True)
     owner_voice = media_root / custom_voiceover if custom_voiceover else None
@@ -433,6 +457,25 @@ def create_job_assets(
         timing = voiceover.with_suffix(".timing.json")
         if timing.is_file():
             assets["voice_timing"] = timing.name
+        from .cost import get_unit_prices, record_usage
+
+        voice_provider = get_provider_for_role("voice")
+        prices = get_unit_prices()
+        voice_price = {
+            "minimax": prices["minimax_speech_per_1k_chars"],
+            "elevenlabs": prices["elevenlabs_per_1k_chars"],
+            "fish_audio": prices["fish_tts_per_1k_chars"],
+            "google": prices["google_speech_per_1k_chars"],
+            "openai": prices["openai_speech_per_1k_chars"],
+        }.get(voice_provider, 0.0)
+        record_usage(
+            job_id,
+            voice_provider,
+            "speech",
+            max(0, len(script)) / 1000,
+            "1k_chars",
+            voice_price,
+        )
     if thumbnail_prompt:
         thumbnail = media_root / f"{job_id}-thumbnail.png"
         if _generate_role_asset(
@@ -444,6 +487,17 @@ def create_job_assets(
             prompt_override=thumbnail_prompt,
         ):
             assets["thumbnail"] = thumbnail.name
+            from .cost import get_unit_prices, record_usage
+
+            prices = get_unit_prices()
+            record_usage(
+                job_id,
+                image_provider,
+                "thumbnail",
+                1,
+                "image",
+                prices.get(f"{image_provider}_image", 0.0) if image_provider != "minimax" else prices["minimax_image"],
+            )
     return assets
 
 
