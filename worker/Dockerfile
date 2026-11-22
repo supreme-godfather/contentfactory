@@ -17,7 +17,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt pillow==13.0.0
 
-COPY --chown=worker:worker worker.py .
+COPY --chown=worker:worker . /app/worker/
 USER 10001
 
-CMD ["python", "/app/worker.py"]
+CMD ["python", "/app/worker/worker.py"]

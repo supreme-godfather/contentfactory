@@ -13,6 +13,7 @@ Two levels of findings:
 import json
 from dataclasses import dataclass, field
 
+from .media_qc import evaluate_report
 from .storyboard import TARGET_DURATION_SECONDS, script_structure
 
 YOUTUBE_TITLE_MAX_CHARS = 100
@@ -66,6 +67,12 @@ def validate_content(*, topic: str, script: str | None, metadata_json: str | Non
             "caption_timing_source"
         ) != "provider_alignment":
             warnings.append("estimated_caption_timing")
+
+        media_report = metadata.get("media_qc")
+        if isinstance(media_report, dict):
+            qc_blockers, qc_warnings = evaluate_report(media_report)
+            blockers.extend(qc_blockers)
+            warnings.extend(qc_warnings)
 
     if script and len(script.strip()) >= minimum_script_chars and not is_clip:
         structure = script_structure(script)

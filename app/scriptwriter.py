@@ -233,29 +233,52 @@ def _minimax_chat(
     temperature: float,
     model: str = MINIMAX_SCRIPT_MODEL,
 ) -> str:
-    response = httpx.post(
-        MINIMAX_CHAT_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    content = payload["choices"][0]["message"]["content"]
-    if not isinstance(content, str):
-        raise RuntimeError("The model returned an unusable script response")
-    return content.strip()
+    """Call the MiniMax chat route, rotating keys when one is rejected.
+
+    A rejected key must never stop the engine: the next configured key is tried
+    and the working one is remembered for the next job.
+    """
+    candidates = [api_key] + [
+        key for key in minimax_text_candidates() if key != api_key
+    ]
+    last_error: Exception | None = None
+    for index, key in enumerate(candidates):
+        try:
+            response = httpx.post(
+                MINIMAX_CHAT_URL,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+                timeout=120,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in {401, 403}:
+                raise
+            last_error = exc
+            logger.warning(
+                "MiniMax rejected a configured key (%s); trying the next one",
+                exc.response.status_code,
+            )
+            continue
+        if index > 0 or key != api_key:
+            _cache_minimax_key(key)
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise RuntimeError("The model returned an unusable script response")
+        return content.strip()
+    raise last_error or RuntimeError("No MiniMax text key is configured")
 
 
 def _parse_json_object(text: str) -> dict[str, object]:
@@ -274,6 +297,106 @@ def _parse_json_object(text: str) -> dict[str, object]:
     return payload
 
 
+def minimax_text_candidates() -> list[str]:
+    """Every configured MiniMax text key, subscription plan first.
+
+    A plan key can expire while a platform key keeps working, so the caller
+    tries each candidate until one answers instead of trusting the first one
+    that exists.
+    """
+    from .config import get_settings
+    from .provider_credentials import get_provider_secret
+
+    candidates: list[str] = []
+    sources = (
+        lambda: get_provider_secret("minimax_mplan"),
+        lambda: get_provider_secret("minimax"),
+        lambda: get_settings().minimax_api_key,
+    )
+    for source in sources:
+        try:
+            key = source()
+        except Exception:
+            key = None
+        if key and str(key) not in candidates:
+            candidates.append(str(key))
+    return candidates
+
+
+def _cached_minimax_key() -> str | None:
+    from .db import ProviderCredential, SessionLocal
+    from .encryption import get_fernet
+
+    with SessionLocal() as session:
+        credential = session.get(ProviderCredential, "minimax_text_active")
+        if credential is None or not credential.secret_encrypted:
+            return None
+        try:
+            return get_fernet().decrypt(credential.secret_encrypted.encode()).decode()
+        except Exception:
+            session.delete(credential)
+            session.commit()
+            return None
+
+
+def _cache_minimax_key(key: str) -> None:
+    from .db import ProviderCredential, SessionLocal
+    from .encryption import get_fernet
+
+    try:
+        encrypted = get_fernet().encrypt(key.encode()).decode()
+    except Exception:
+        return
+    try:
+        with SessionLocal() as session:
+            credential = session.get(ProviderCredential, "minimax_text_active")
+            if credential is None:
+                session.add(
+                    ProviderCredential(provider="minimax_text_active", secret_encrypted=encrypted)
+                )
+            else:
+                credential.secret_encrypted = encrypted
+            session.commit()
+    except Exception:
+        logger.warning("Could not remember the working MiniMax key", exc_info=True)
+
+
+def minimax_text_key() -> str | None:
+    """Return a MiniMax text key that is known to answer, if there is one."""
+    cached = _cached_minimax_key()
+    if cached:
+        return cached
+    candidates = minimax_text_candidates()
+    return candidates[0] if candidates else None
+
+
+def _parse_json_array(text: str) -> list[str]:
+    """Accept a JSON array or newline separated lines and return clean strings."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:]
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start != -1 and end > start:
+        try:
+            payload = json.loads(cleaned[start:end + 1])
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, list):
+            return [str(item).strip() for item in payload if str(item).strip()]
+    lines = [line.strip(" -*\t") for line in cleaned.splitlines()]
+    stripped = []
+    for line in lines:
+        head, _, tail = line.partition(" ")
+        if head.rstrip(".):").isdigit() and tail.strip():
+            line = tail.strip()
+        if 8 <= len(line) <= 220:
+            stripped.append(line)
+    return stripped
+
+
 def _script_prompt(
     topic: str,
     niche_label: str,
@@ -284,6 +407,7 @@ def _script_prompt(
     genre: dict[str, str] | None = None,
 ) -> str:
     from .genres import genre_directives
+    from .lessons import lessons_block
 
     direction = ""
     if fmt == "reel":
@@ -304,6 +428,7 @@ def _script_prompt(
         f"Length: {budget}\n"
         f"{facts}"
         f"{genre_directives(genre)}"
+        f"{lessons_block()}"
         f"{RETAIL_RULES}\n"
         f"Required closing line (exact, nothing after it):\n{CLOSING_LINES}\n"
         f"{direction}{extra}"
@@ -350,7 +475,7 @@ def build_script(
         if provider not in {"openai", "gemini", "huggingface", "minimax"}:
             return fallback
         api_key = (
-            get_provider_secret("minimax_mplan")
+            minimax_text_key()
             if provider == "minimax"
             else get_provider_secret(provider)
         )
@@ -494,7 +619,7 @@ def build_script_package(
             return package
         if provider_cooldown_until(provider) is not None:
             return package
-        api_key = get_provider_secret("minimax_mplan")
+        api_key = minimax_text_key()
         if not api_key:
             return package
     except Exception:
@@ -561,8 +686,54 @@ def build_script_package(
         }
     except Exception:
         logger.warning("Metadata pass failed; using deterministic metadata", exc_info=True)
+    hooks = build_hook_variants(final_script, topic, minimax_text_key() or api_key)
+    if hooks:
+        package["metadata"]["hook_variants"] = hooks
     return package
 
+
+def build_hook_variants(
+    script: str,
+    topic: str,
+    api_key: str,
+    *,
+    count: int = 3,
+) -> list[str]:
+    """Propose alternative opening lines for a finished script.
+
+    This is a separate, cheap pass so a failure here never costs the titles,
+    description or hashtags, and the owner can still swap the opening.
+    """
+    if not script.strip() or not api_key:
+        return []
+    prompt = (
+        "Give exactly three alternative opening lines for a short vertical video.\n"
+        "Return ONLY a JSON array of three strings.\n"
+        "Each string is one punchy sentence in the same language as the script, "
+        "under twelve words, that hooks the viewer and promises the payoff.\n"
+        "Do not number them and do not explain them.\n\n"
+        f"Topic: {topic}\n\n"
+        f"SCRIPT:\n{script[:1200]}"
+    )
+    try:
+        raw = _minimax_chat(
+            api_key,
+            METADATA_SYSTEM,
+            prompt,
+            max_tokens=420,
+            temperature=0.8,
+        )
+        variants = _parse_json_array(raw)
+    except Exception:
+        logger.warning("Hook variant pass failed; keeping the current opening", exc_info=True)
+        return []
+    cleaned: list[str] = []
+    for variant in variants:
+        text = " ".join(str(variant).split())[:220]
+        if len(text) < 8 or text in cleaned:
+            continue
+        cleaned.append(text)
+    return cleaned[:count]
 
 def research_topic_angle(topic: str, niche: str | None = None) -> dict[str, object]:
     """Ask the cheap research route for a hookable angle on a topic.
@@ -584,7 +755,7 @@ def research_topic_angle(topic: str, niche: str | None = None) -> dict[str, obje
             return {}
         if provider_cooldown_until(provider) is not None:
             return {}
-        api_key = get_provider_secret("minimax_mplan")
+        api_key = minimax_text_key()
         if not api_key:
             return {}
     except Exception:

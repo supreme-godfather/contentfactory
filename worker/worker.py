@@ -11,6 +11,11 @@ from uuid import UUID
 
 import httpx
 
+try:
+    from .media_qc import measure_media
+except ImportError:  # pragma: no cover - direct script execution
+    from media_qc import measure_media
+
 
 def _configured_worker_id(value: str | None = None) -> str:
     worker_id = (value or os.environ.get("WORKER_ID", "")).strip() or socket.gethostname()
@@ -643,12 +648,16 @@ def render_video(
             "[music][voice]sidechaincompress=threshold=0.025:ratio=8:"
             "attack=20:release=300[ducked]",
             "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2,"
-            f"atrim=duration={duration:.3f},alimiter=limit=0.90[a]",
+            f"atrim=duration={duration:.3f},alimiter=limit=0.90,"
+            "loudnorm=I=-14:LRA=7:TP=-1.5[a]",
         ])
     elif voice_index is not None:
-        filters.append("[voice]alimiter=limit=0.90[a]")
+        filters.append("[voice]alimiter=limit=0.90,loudnorm=I=-14:LRA=7:TP=-1.5[a]")
     elif music_index is not None:
-        filters.append("[music]loudnorm=I=-18:LRA=7:TP=-1.5,alimiter=limit=0.90[a]")
+        filters.append(
+            "[music]loudnorm=I=-18:LRA=7:TP=-1.5,alimiter=limit=0.90,"
+            "loudnorm=I=-14:LRA=7:TP=-1.5[a]"
+        )
 
     command.extend(["-filter_complex", ";".join(filters), "-map", "[v]"])
     if voice_index is not None or music_index is not None:
@@ -877,6 +886,19 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                         bgm_path=local_assets.get("bgm"),
                         scene_assets=mixed_scene_assets,
                     )
+                    report = measure_media(Path(render_path))
+                    qc = client.post(
+                        f"/api/worker/{job['id']}/qc",
+                        params={"worker_id": worker_id},
+                        json=report,
+                    )
+                    qc.raise_for_status()
+                    qc_result = qc.json()
+                    if not qc_result.get("ok", True):
+                        raise RuntimeError(
+                            "Media quality control rejected the render: "
+                            + ", ".join(qc_result.get("blockers") or ["unknown"])
+                        )
                     thumbnails = render_thumbnails(job, Path(render_path), job_work_dir)
                     for platform, thumbnail_path in thumbnails.items():
                         with thumbnail_path.open("rb") as thumbnail:

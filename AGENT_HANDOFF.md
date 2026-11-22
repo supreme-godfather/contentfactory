@@ -29,6 +29,53 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### OpenCode — 2026-11-22 (media QC, publish preflight, pipeline health)
+
+- **Task:** Make the engine more reliable and more useful as a professional
+  media engine, then verify it live on Railway.
+- **Status:** Implemented, tested (297 passed) and deployed to the API, the
+  render worker and the clipper. Verified live: a job rendered, was measured by
+  the worker, passed the quality gate and produced a clean preflight report.
+  The verification jobs were removed afterwards (`content_jobs_removed: 7`,
+  `media_files_removed: 5`); the queue is empty.
+- **Media quality control:** `app/media_qc.py` owns the delivery profile
+  (resolution, frame rate, audio presence, −14 LUFS ±2.5, true peak ≤ −1 dBFS).
+  `worker/media_qc.py` measures the rendered file with `ffprobe` + `ebur128`
+  and posts it to `POST /api/worker/{job_id}/qc`. The API stores the report on
+  the job metadata; the render is only accepted when it has no blockers
+  (`complete_render_job`), and both the quality gate and the publish preflight
+  read it. The worker image now copies the whole `worker/` directory
+  (`COPY . /app/worker/`) because the build context is the `worker/` folder.
+- **Publish preflight:** `app/preflight.py` blocks publication for a missing or
+  unmeasured render, a missing thumbnail, an invalid platform credential, a
+  missing public base URL, a duplicate topic published in the last 24 hours,
+  and any media QC blocker. Wired into `publish_job` and exposed at
+  `POST /api/admin/preflight/{job_id}`.
+- **Pipeline health:** `app/health.py` returns workers, queue depth,
+  publications today, spend today, provider roles, provider cooldowns, the
+  media QC pass rate and recent failures. `GET /api/health/pipeline`,
+  Telegram `/health`, and the Operations → System health panel use it.
+- **Audio delivery fix:** the worker audio chain now ends with
+  `alimiter=limit=0.90,loudnorm=I=-14:LRA=7:TP=-1.5`. The first measured
+  render showed a true peak above the profile, which the new QC gate caught.
+- **Hook variants:** `app/hooks.py` + `build_hook_variants` in the scriptwriter
+  propose three alternative openings; the Telegram script review card lists
+  them and `POST /api/admin/jobs/{job_id}/hook` applies one. The hook pass is
+  isolated so a failure never costs the titles, description or hashtags.
+- **Performance lessons:** `app/lessons.py` turns synced analytics into short
+  directives that are injected into the next script prompt.
+- **Provider key rotation:** the MiniMax text route now tries every configured
+  key and remembers the one that answers. The stored `minimax_mplan` credential
+  was returning HTTP 401, so every AI script, metadata pass and hook pass had
+  been silently falling back to templates. The working key is stored encrypted
+  in `ProviderCredential("minimax_text_active")`.
+- **Next action for the owner:** reconnect YouTube in the bot (the delete scope
+  `youtube.force-ssl` needs a fresh grant) and paste an Instagram token that
+  includes `instagram_manage_media`; then `POST
+  /api/admin/publications/delete-all` removes the 7 YouTube videos and 7
+  Instagram Reels that are still live. Publishing stays OFF, mock mode stays
+  ON, auto mode stays OFF until the owner decides otherwise.
+
 ### OpenCode — 2026-11-21 (genre library, auto mode, reliability)
 
 - **Task:** Add the genre system, a fully automated pipeline that does not need

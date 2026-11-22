@@ -9,6 +9,7 @@ from sqlalchemy import or_, select, text, update
 from .config import get_settings
 from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, WorkerLease
 from .google_media import create_job_assets
+from .media_qc import evaluate_report
 from .publishers import get_publisher
 from .quality import validate_content
 from .scriptwriter import build_script, build_script_package
@@ -115,6 +116,13 @@ def _apply_ai_publishing_package(
     hook_type = str(package_metadata.get("hook_type") or "")[:24]
     if hook_type:
         metadata["hook_type"] = hook_type
+    hook_variants = [
+        " ".join(str(item).split())[:220]
+        for item in (package_metadata.get("hook_variants") or [])
+        if str(item).strip()
+    ]
+    if hook_variants:
+        metadata["hook_variants"] = hook_variants[:3]
     concept = str(package_metadata.get("thumbnail_concept") or "")[:300]
     if concept:
         metadata["thumbnail_concept"] = concept
@@ -875,6 +883,26 @@ def publish_job(job_id: str, only_platforms: list[str] | None = None) -> Content
             if not platforms:
                 raise ValueError("No requested platform is valid for this job")
         metadata = json.loads(job.metadata_json or "{}")
+        if getattr(settings, "publish_preflight_enabled", True):
+            from .preflight import qc_problems, run_preflight
+
+            problems = run_preflight(
+                job,
+                metadata,
+                platforms,
+                mock_publishing=is_mock_publishing(),
+                settings=settings,
+            )
+            problems.extend(
+                qc_problems(
+                    metadata,
+                    required=bool(getattr(settings, "media_qc_required", False)),
+                )
+            )
+            if problems:
+                raise ValueError(
+                    "Preflight blocked publication: " + ", ".join(sorted(set(problems)))
+                )
         youtube_metadata = metadata.get("youtube") or {}
         instagram_metadata = metadata.get("instagram") or {}
         thumbnails = metadata.get("thumbnails") or {}
@@ -1071,6 +1099,19 @@ def complete_render_job(job_id: str, worker_id: str, render_path: str) -> Conten
         job = session.get(ContentJob, job_id)
         if not job or job.status != "rendering" or job.claimed_by != worker_id:
             raise ValueError("Job is not currently rendering")
+        if getattr(get_settings(), "media_qc_required", False):
+            try:
+                metadata = json.loads(job.metadata_json or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            report = metadata.get("media_qc")
+            if not isinstance(report, dict):
+                raise ValueError("The render was not measured; media quality control is required")
+            qc_blockers, _qc_warnings = evaluate_report(report)
+            if qc_blockers:
+                raise ValueError(
+                    "Media quality control rejected the render: " + ", ".join(qc_blockers)
+                )
         job.render_path = render_path
         job.stage = "quality_check"
         job.status = "awaiting_approval"
@@ -1080,6 +1121,31 @@ def complete_render_job(job_id: str, worker_id: str, render_path: str) -> Conten
         session.commit()
         session.refresh(job)
     return _maybe_auto_publish(job)
+
+
+def record_media_qc(job_id: str, worker_id: str, report: dict) -> dict[str, object]:
+    """Store the media measurements a worker produced for a render."""
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if not job or job.status != "rendering" or job.claimed_by != worker_id:
+            raise ValueError("Job is not currently rendering")
+        try:
+            metadata = json.loads(job.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["media_qc"] = report
+        metadata["media_qc_at"] = datetime.now(timezone.utc).isoformat()
+        job.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        job.updated_at = datetime.now(timezone.utc)
+        session.commit()
+    blockers, warnings = evaluate_report(report)
+    return {
+        "blockers": blockers,
+        "warnings": warnings,
+        "ok": not blockers,
+    }
 
 
 def _maybe_auto_publish(job: ContentJob) -> ContentJob:

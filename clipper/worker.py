@@ -120,6 +120,54 @@ def _probe(source: Path) -> dict[str, object]:
     }
 
 
+def measure_candidate(output: Path) -> dict[str, object]:
+    """Measure a rendered clip against the delivery profile."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise RuntimeError("FFprobe is required")
+    result = _run(
+        [
+            ffprobe,
+            "-v", "error",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            str(output),
+        ],
+        timeout=60,
+        cwd=output.parent,
+    )
+    if result.returncode != 0:
+        return {"ok": False, "blockers": ["probe_failed"]}
+    payload = json.loads(result.stdout)
+    streams = payload.get("streams") or []
+    video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+    blockers: list[str] = []
+    width = int(video.get("width") or 0) if video else 0
+    height = int(video.get("height") or 0) if video else 0
+    if not video:
+        blockers.append("no_video_stream")
+    elif width < 720 or height < 720:
+        blockers.append("resolution_too_small")
+    if not audio:
+        blockers.append("no_audio_stream")
+    duration = float((payload.get("format") or {}).get("duration") or 0)
+    if duration < 10:
+        blockers.append("duration_too_short")
+    size = output.stat().st_size
+    if size < 50000:
+        blockers.append("file_too_small")
+    return {
+        "ok": not blockers,
+        "blockers": blockers,
+        "width": width,
+        "height": height,
+        "duration_seconds": round(duration, 2),
+        "bytes": size,
+    }
+
+
 def _parse_vtt_timestamp(value: str) -> int:
     parts = value.replace(",", ".").split(":")
     if len(parts) == 2:
@@ -596,10 +644,19 @@ def process_job(client: httpx.Client, job: dict[str, object], work_root: Path) -
                 headers=headers,
                 json={"stage": "render"},
             ).raise_for_status()
+            registered = 0
             for candidate in candidates:
                 rank = int(candidate["rank"])
                 output = work_dir / f"candidate-{rank}.mp4"
                 render_candidate(source, candidate, output)
+                measurement = measure_candidate(output)
+                if not measurement.get("ok"):
+                    print(
+                        f"Skipping clip candidate {rank}: "
+                        f"{measurement.get('blockers')}",
+                        flush=True,
+                    )
+                    continue
                 youtube_thumbnail, instagram_thumbnail = render_thumbnails(output, work_dir, rank)
                 with (
                     output.open("rb") as media,
@@ -625,6 +682,9 @@ def process_job(client: httpx.Client, job: dict[str, object], work_root: Path) -
                         },
                     )
                 response.raise_for_status()
+                registered += 1
+            if registered == 0:
+                raise RuntimeError("no_renderable_candidates")
             client.post(
                 f"/api/clip-worker/jobs/{job_id}/complete",
                 params={"worker_id": WORKER_ID},

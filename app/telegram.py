@@ -827,6 +827,15 @@ def _job_keyboard(job_or_id: Any) -> dict[str, list[list[dict[str, str]]]]:
             [_button("🔄 Rewrite script", f"script_regenerate:{job_id}:{job.content_version}")],
             [_button("🗑 Reject job", f"script_reject:{job_id}:{job.content_version}")],
         ])
+        variants = _hook_variants_for(job)
+        if variants:
+            rows.insert(
+                1,
+                [
+                    _button(f"🪝 Hook {position}", f"hook:{job_id}:{position - 1}")
+                    for position in range(1, len(variants) + 1)
+                ],
+            )
     elif job.status in {"drafting_script", "generating_assets", "queued", "rendering"}:
         if job.status not in {"rendering", "generating_assets"}:
             rows.append([_button("🗑 Cancel job", f"cancel:{job_id}")])
@@ -1201,6 +1210,19 @@ async def _run_voice_benchmark_and_send(chat_id: int) -> None:
         )
 
 
+def _hook_variants_for(job: Any) -> list[str]:
+    """Hook options offered for a script under review."""
+    try:
+        import json as _json
+
+        from .hooks import hook_variants
+
+        metadata = _json.loads(getattr(job, "metadata_json", None) or "{}")
+    except (TypeError, ValueError):
+        return []
+    return hook_variants(metadata)
+
+
 def _script_review_message(job: Any) -> str:
     script = html.escape((job.script_text or "").strip())
     if len(script) > 3500:
@@ -1217,11 +1239,24 @@ def _script_review_message(job: Any) -> str:
     custom_note = (
         "\n📝 <i>This is your own script.</i>\n" if metadata.get("custom_script") else ""
     )
+    variants = _hook_variants_for(job)
+    hook_note = ""
+    if variants:
+        selected = str(metadata.get("selected_hook") or "")
+        lines = []
+        for position, variant in enumerate(variants, start=1):
+            mark = "✅" if selected and selected == variant else f"{position}️⃣"
+            lines.append(f"  {mark} <i>{html.escape(variant[:120])}</i>")
+        hook_note = (
+            "\n🪝 <b>Hook options</b> (tap one to swap the opening):\n"
+            + "\n".join(lines)
+            + "\n"
+        )
     return (
         f"📝 <b>Script review · v{job.content_version}</b>\n{_divider()}\n\n"
         f"<b>{html.escape(job.topic)}</b>\n\n"
         f"{script}\n\n"
-        f"{polish_note}{custom_note}"
+        f"{hook_note}{polish_note}{custom_note}"
         "No voice, image, video, music, or rendering credits have been spent yet. "
         "Approve this exact version to start media generation.\n"
         f"{_divider()}"
@@ -2133,6 +2168,7 @@ async def _register_bot_commands(client: httpx.AsyncClient, token: str) -> None:
     commands = [
         {"command": "start", "description": "🏠 Open the command center"},
         {"command": "status", "description": "📊 View system dashboard"},
+        {"command": "health", "description": "🩺 Check pipeline health"},
         {"command": "queue", "description": "📥 Review content queue"},
         {"command": "trends", "description": "🔥 View trend radar"},
         {"command": "analytics", "description": "📈 Performance analytics"},
@@ -2367,6 +2403,67 @@ def _build_status_message() -> str:
         f"\n"
         f"{_divider()}"
     )
+
+
+def _build_health_message() -> str:
+    from .health import pipeline_health
+
+    try:
+        health = pipeline_health()
+    except Exception as exc:
+        return (
+            "🩺 <b>Pipeline Health</b>\n"
+            f"{_divider()}\n\n"
+            f"  Health check failed: {_safe_error_text(exc)}"
+        )
+
+    status = str(health.get("status") or "unknown")
+    icons = {"healthy": "🟢", "degraded": "🟠", "paused": "🔴"}
+    workers = health.get("workers") or {}
+    queues = health.get("queues") or {}
+    publications = health.get("publications") or {}
+    spend = health.get("spend") or {}
+    providers = health.get("providers") or {}
+    qc = health.get("media_qc") or {}
+    failures = health.get("recent_failures") or []
+
+    youtube = providers.get("youtube") or {}
+    instagram = providers.get("instagram") or {}
+
+    lines = [
+        f"🩺 <b>Pipeline Health</b>",
+        f"{_divider()}",
+        "",
+        f"  {icons.get(status, '⚪')}  State: <b>{status.upper()}</b>",
+        f"  🖥  Workers: {workers.get('online', 0)}/{workers.get('total', 0)} online",
+        f"  📥  Queues: {queues.get('queued', 0)} queued · "
+        f"{queues.get('awaiting_approval', 0)} to approve · {queues.get('failed', 0)} failed",
+        "",
+        "  <b>Delivery</b>",
+        f"  📤  Published today: {publications.get('published_today', 0)}"
+        f"/{publications.get('daily_limit', 0)} · "
+        f"{publications.get('remaining_today', 0)} left",
+        f"  🎬  Media QC: {qc.get('passed', 0)}/{qc.get('measured', 0)} measured renders passed",
+        "",
+        "  <b>Providers</b>",
+        f"  ▶️  YouTube: {'ready' if youtube.get('credential') else 'no credential'}"
+        f" · {'enabled' if youtube.get('enabled') else 'disabled'}",
+        f"  📸  Instagram: {'ready' if instagram.get('credential') else 'no credential'}"
+        f" · {'enabled' if instagram.get('enabled') else 'disabled'}",
+        f"  💰  Spend today: ${float(spend.get('today_usd', 0.0)):.2f}",
+    ]
+    issues = health.get("issues") or []
+    if issues:
+        lines += ["", "  <b>Attention</b>"]
+        lines += [f"  ⚠️  {str(item).replace('_', ' ')}" for item in issues]
+    if failures:
+        lines += ["", "  <b>Recent failures</b>"]
+        for failure in failures[:3]:
+            error = str(failure.get("error") or "")[:70]
+            lines.append(f"  🔴  {failure.get('topic')} — {error}")
+    lines.append("")
+    lines.append(_divider())
+    return "\n".join(lines)
 
 
 def _build_queue_message() -> str:
@@ -4228,8 +4325,6 @@ async def handle_update(update: dict[str, Any]) -> None:
                 from .automation import automation_enabled
                 from .platform_credentials import get_platform_secret
 
-                workers = worker_status()
-                online = [worker["worker_id"] for worker in workers if worker["online"]]
                 ready_state = "not configured"
                 if get_settings().public_base_url:
                     try:
@@ -4238,26 +4333,26 @@ async def handle_update(update: dict[str, Any]) -> None:
                         ready_state = "ready" if response.is_success else f"HTTP {response.status_code}"
                     except httpx.HTTPError:
                         ready_state = "unreachable"
-                worker_state = ", ".join(html.escape(str(worker_id)) for worker_id in online) or "offline"
                 configured = bool(
                         get_platform_secret("instagram")
                         or get_settings().instagram_access_token
                 )
                 await send_message(
-                        chat_id,
-                        (
-                            f"🖥 <b>System health</b>\n{_divider()}\n\n"
-                            f"API + database: <b>{html.escape(ready_state)}</b>\n"
-                            f"Render worker: <b>{worker_state}</b>\n"
-                            f"Instagram token: <b>{'configured' if configured else 'missing'}</b>\n"
-                            f"Factory: <b>{'paused' if is_paused() else 'running'}</b>\n"
-                            f"Automation: <b>{'on' if automation_enabled() else 'off'}</b>\n\n"
+                    chat_id,
+                    (
+                        f"🖥 <b>System health</b>\n{_divider()}\n\n"
+                        f"API + database: <b>{html.escape(ready_state)}</b>\n"
+                        f"Instagram token: <b>{'configured' if configured else 'missing'}</b>\n"
+                        f"Factory: <b>{'paused' if is_paused() else 'running'}</b>\n"
+                        f"Automation: <b>{'on' if automation_enabled() else 'off'}</b>\n\n"
+                        f"{_build_health_message()}\n\n"
                         "If no worker is online, check the Railway factory-worker service "
                         "or optional RDP worker, confirm FFmpeg is installed, and verify "
                         "WORKER_TOKEN and FACTORY_URL match the API."
                     ),
                     _back_keyboard(),
                 )
+
 
             elif data.startswith("provider:"):
                 provider = data.split(":", 1)[1]
@@ -4336,6 +4431,24 @@ async def handle_update(update: dict[str, Any]) -> None:
                     chat_id,
                     "✅ <b>Script approved</b>\n"
                     f"Version v{job.content_version} is locked. Media generation has started.",
+                    _job_keyboard(job),
+                )
+
+            elif data.startswith("hook:"):
+                parts = data.split(":")
+                if len(parts) != 3 or not parts[2].isdigit():
+                    await send_message(chat_id, "⚠️ Invalid hook selection.", _keyboard())
+                    return
+                from .hooks import apply_hook_variant
+
+                try:
+                    job = apply_hook_variant(parts[1], int(parts[2]))
+                except ValueError as exc:
+                    await send_message(chat_id, f"⚠️ {exc}", _keyboard())
+                    return
+                await send_message(
+                    chat_id,
+                    _script_review_message(job),
                     _job_keyboard(job),
                 )
 
@@ -5103,6 +5216,9 @@ async def handle_update(update: dict[str, Any]) -> None:
 
         elif text == "/status":
             await send_message(chat_id, _build_status_message(), _keyboard())
+
+        elif text == "/health":
+            await send_message(chat_id, _build_health_message(), _keyboard())
 
         elif text == "/queue":
             await send_message(chat_id, _build_queue_message(), _keyboard())

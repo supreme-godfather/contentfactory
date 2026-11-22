@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = 1
     max_storage_gb: int = 4
     mock_publishing: bool = True
+    media_qc_required: bool = True
+    publish_preflight_enabled: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

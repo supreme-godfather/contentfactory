@@ -407,6 +407,57 @@ database, applied immediately, no redeploy:
   offline. This selects the compute worker, not an AI video-generation API; no
   external video-generation API is connected.
 
+## Media quality control, preflight and health (2026-11-22)
+
+The engine now measures what it renders and refuses to publish media it has
+not verified. Three new modules carry this:
+
+- `app/media_qc.py` — the delivery profile (resolution, frame rate, audio
+  presence, integrated loudness around −14 LUFS, true peak below −1 dBFS) and
+  the single place those thresholds live.
+- `worker/media_qc.py` — the render worker measures the file it just produced
+  with `ffprobe` and `ebur128` and posts the raw measurements to the API.
+- `app/preflight.py` — the checks that run immediately before a publication
+  attempt: media present, media measured and passing, thumbnail present,
+  platform credential valid, public URL configured, and no duplicate topic
+  published in the last 24 hours.
+
+Flow: the worker renders → measures → posts the report to
+`POST /api/worker/{job_id}/qc` → the API stores it on the job metadata → the
+render is only accepted when the report has no blockers → the quality gate and
+the publish preflight both read that report. A render that fails the profile
+is rejected instead of being uploaded to a platform.
+
+Operators can inspect all of this:
+
+- `GET /api/health/pipeline` — workers, queue depth, publications today, spend
+  today, provider roles and cooldowns, media QC pass rate, recent failures.
+- `POST /api/admin/preflight/{job_id}` — the preflight problems, quality
+  report, media QC findings, publishing package and hook options of one job.
+- `GET /api/health/pipeline` is also the source of the Telegram `/health`
+  command and the Operations → System health panel.
+
+## Hook variants and performance lessons (2026-11-22)
+
+- **Hook variants** — after the retention editor pass, a separate cheap model
+  call proposes three alternative opening lines for the script. The script
+  review card in Telegram lists them with 🪝 buttons, and
+  `POST /api/admin/jobs/{job_id}/hook` with `{"index": 0|1|2}` applies one.
+  Applying a hook replaces the first paragraph of the narration, bumps the
+  content version and returns the job to script review, so the new opening is
+  approved like any other version. Nothing is spent on media before approval.
+- **Performance lessons** (`app/lessons.py`) — after YouTube analytics are
+  synced, the engine distils watch time, engagement and the strongest video
+  into short directives ("viewers leave before 12 seconds: put the payoff in
+  the first line") and injects them into the next script prompt. The engine
+  learns from its own output instead of repeating what did not work.
+- **Provider key rotation** — the MiniMax text route now tries every
+  configured key (subscription plan first, then the platform key, then the
+  environment variable) and remembers the one that answers. An expired plan
+  key no longer silently degrades the engine to template scripts and template
+  metadata; the rotation is reported in the API logs and the verified key is
+  stored encrypted.
+
 ## Next implementation stage
 
 Hindi TTS and artwork are wired through Google Cloud or OpenAI and remain

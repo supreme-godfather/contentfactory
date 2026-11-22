@@ -32,6 +32,7 @@ from .clipping import (
 from sqlalchemy import select
 from .discovery import add_analytics_snapshot, add_trend, analytics_recommendations, analytics_summary, list_trends, monetisation_readiness
 from .encryption import validate_youtube_encryption_configuration
+from .media_qc import qc_findings
 from .quality import validate_content
 from .security import require_admin_api_token, require_worker_token, verify_webhook_secret
 from .services import approve_job, approve_script, claim_render_job, complete_render_job, create_job, fail_render_job, generate_assets, generate_content, is_paused, list_jobs, publish_job, retry_job, worker_heartbeat
@@ -1391,6 +1392,114 @@ def worker_complete(job_id: str, worker_id: str, render_path: str, _: None = Dep
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"id": job.id, "status": job.status, "stage": job.stage}
+
+
+@app.post("/api/worker/{job_id}/qc")
+def worker_media_qc(
+    job_id: str,
+    worker_id: str,
+    report: dict,
+    _: None = Depends(require_worker_token),
+) -> dict[str, object]:
+    from .services import record_media_qc
+
+    try:
+        result = record_media_qc(job_id, worker_id, report)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result
+
+
+class HookRequest(BaseModel):
+    index: int = Field(ge=0, le=2)
+
+
+@app.post("/api/admin/jobs/{job_id}/hook")
+def apply_hook_endpoint(
+    job_id: str,
+    request: HookRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .hooks import apply_hook_variant
+
+    try:
+        job = apply_hook_variant(job_id, request.index)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "id": job.id,
+        "status": job.status,
+        "content_version": job.content_version,
+        "script": job.script_text,
+    }
+
+
+@app.get("/api/health/pipeline")
+def pipeline_health_endpoint(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .health import pipeline_health
+
+    return pipeline_health()
+
+
+@app.post("/api/admin/preflight/{job_id}")
+def preflight_endpoint(job_id: str, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .hq import is_mock_publishing
+    from .preflight import qc_problems, run_preflight
+    from .services import _resolve_job
+
+    settings = get_settings()
+    with SessionLocal() as session:
+        job = _resolve_job(session, job_id)
+        try:
+            metadata = json.loads(job.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        platforms = ["youtube", "instagram"] if job.platform == "both" else [job.platform]
+        problems = run_preflight(
+            job,
+            metadata,
+            platforms,
+            mock_publishing=is_mock_publishing(),
+            settings=settings,
+        )
+        problems.extend(
+            qc_problems(metadata, required=bool(getattr(settings, "media_qc_required", False)))
+        )
+        blockers, warnings = qc_findings(metadata)
+        report = validate_content(
+            topic=job.topic,
+            script=job.script_text,
+            metadata_json=job.metadata_json,
+            render_path=job.render_path,
+        )
+        from .hooks import hook_variants
+
+    return {
+        "id": job.id,
+        "status": job.status,
+        "problems": sorted(set(problems)),
+        "hooks": {
+            "options": hook_variants(metadata),
+            "selected": str(metadata.get("selected_hook") or ""),
+        },
+        "package": {
+            "title": str(metadata.get("title") or ""),
+            "title_options": [str(item) for item in (metadata.get("title_options") or [])][:3],
+            "hashtags": [str(item) for item in (metadata.get("hashtags") or [])][:12],
+            "hook_type": str(metadata.get("hook_type") or ""),
+            "cover_concept": str(metadata.get("thumbnail_concept") or ""),
+            "duration_seconds": metadata.get("duration_seconds"),
+            "voice_provider": metadata.get("voice_provider"),
+            "video_provider": metadata.get("video_provider"),
+        },
+        "quality": {
+            "passed": report.passed,
+            "score": report.score,
+            "blockers": list(report.blockers),
+            "warnings": list(report.warnings),
+        },
+        "media_qc": {"blockers": blockers, "warnings": warnings},
+    }
 
 
 @app.post("/api/worker/{job_id}/media")
