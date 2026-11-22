@@ -124,6 +124,8 @@ _pending_custom_creator: set[int] = set()
 _pending_custom_part_count: dict[int, int] = {}
 _pending_instagram_id: set[int] = set()
 _pending_schedule: dict[int, str] = {}
+_pending_series_topic: dict[int, str] = {}
+_pending_series_pack: dict[int, str] = {}
 _unauthorized_notice_times: OrderedDict[int, float] = OrderedDict()
 _background_tasks: set[asyncio.Task[object]] = set()
 _voice_catalog_results: dict[str, list[dict[str, object]]] = {}
@@ -202,6 +204,7 @@ def _studio_keyboard() -> dict[str, list[list[dict[str, str]]]]:
 
     return {"inline_keyboard": [
         [_button("✨ Create topic", "create"), _button("🧠 Custom series", "custom_creator")],
+        [_button("📚 Story series", "series_panel"), _button("🎭 Format pack", "pack_panel")],
         [_button("🔥 Trending topics", "trends"), _button("🤖 Run automation", "automation:run")],
         [_button("🎭 Genre library", "genre:panel")],
         [_button(
@@ -2466,6 +2469,151 @@ def _build_health_message() -> str:
     return "\n".join(lines)
 
 
+def _build_series_panel() -> str:
+    from .series import list_series, series_state
+
+    try:
+        series_list = list_series(limit=10)
+    except Exception:
+        series_list = []
+    if not series_list:
+        return (
+            "📚 <b>Story Series</b>\n"
+            f"{_divider()}\n\n"
+            "  No series yet.\n\n"
+            "  A series tells one story in six parts: the engine plans the whole "
+            "arc, every part ends on a cliffhanger, and the parts are released "
+            "one at a time so the audience stays warm.\n\n"
+            "  Tap <b>New story series</b> to start one."
+        )
+    lines = ["📚 <b>Story Series</b>", _divider(), ""]
+    for series in series_list:
+        state = series_state(series.id)
+        published = sum(1 for part in state["parts"] if part["published"])
+        lines.append(
+            f"  📖 <code>{series.id[:8]}</code> {html.escape(str(series.topic))} — "
+            f"{published}/{state['part_count']} published · {state['status']}"
+        )
+    lines += ["", "Tap a series to open it."]
+    return "\n".join(lines)
+
+
+def _series_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .series import list_series
+
+    rows: list[list[dict[str, str]]] = []
+    for series in list_series(limit=10):
+        rows.append([_button(f"📖 {series.topic[:36]}", f"series:{series.id}")])
+    rows.append([_button("➕ New story series", "series_new")])
+    rows.append([_button("🔙 Back", "nav:studio")])
+    return {"inline_keyboard": rows}
+
+
+def _build_series_card(series_id: str) -> str:
+    from .series import series_state
+
+    try:
+        state = series_state(series_id)
+    except ValueError:
+        return "⚠️ Series not found."
+    lines = [
+        f"📖 <b>{html.escape(str(state['topic']))}</b>",
+        _divider(),
+        "",
+        f"  Format: <b>{html.escape(str(state['pack_label']))}</b>",
+        f"  Parts: <b>{state['part_count']}</b> · Cadence: <b>{html.escape(str(state['cadence_label']))}</b>",
+        f"  Budget: <b>${float(state['budget_usd']):.2f}</b> · Status: <b>{state['status']}</b>",
+        "",
+    ]
+    for part in state["parts"]:
+        emoji = "✅" if part["published"] else _STATUS_EMOJI.get(part["status"], "⚪")
+        title = html.escape(str(part["title"])[:60])
+        when = ""
+        if part.get("scheduled_at"):
+            when = f" · {html.escape(str(part['scheduled_at'])[:16])}"
+        lines.append(f"  {emoji} भाग {part['part_index']} — {title} <i>{part['status']}</i>{when}")
+    lines.append("")
+    lines.append("Parts release one at a time; each one needs the previous part to be live first.")
+    return "\n".join(lines)
+
+
+def _series_card_keyboard(series_id: str) -> dict[str, list[list[dict[str, str]]]]:
+    from .series import series_jobs
+
+    rows: list[list[dict[str, str]]] = []
+    try:
+        jobs = series_jobs(series_id)
+    except Exception:
+        jobs = []
+    for job in jobs:
+        if job.status in {"awaiting_script_approval", "approved", "awaiting_approval"}:
+            label = {
+                "awaiting_script_approval": "📝 Review script",
+                "approved": "📤 Publish now",
+                "awaiting_approval": "✅ Approve video",
+            }.get(job.status, "Open")
+            action = {
+                "awaiting_script_approval": "script_approve",
+                "approved": "publish",
+                "awaiting_approval": "approve",
+            }.get(job.status, "queue")
+            rows.append([_button(f"{label} · भाग {job.topic[-3:]}", f"{action}:{job.id}")])
+    rows.append([_button("⏭ Release next part now", f"series_release:{series_id}")])
+    rows.append([_button("⏸ Pause series", f"series_status:{series_id}:paused")])
+    rows.append([_button("🔙 Back", "series_panel")])
+    return {"inline_keyboard": rows}
+
+
+def _build_pack_panel() -> str:
+    from .hq import get_active_pack_id
+    from .packs import PACKS
+
+    active = get_active_pack_id()
+    lines = ["🎭 <b>Format packs</b>", _divider(), ""]
+    for pack in PACKS.values():
+        mark = "✅" if pack.pack_id == active else "▫️"
+        series_note = " · series-ready" if pack.series_ready else ""
+        lines.append(f"  {mark} <b>{html.escape(pack.label)}</b>{series_note}")
+        lines.append(f"     <i>{html.escape(pack.summary)}</i>")
+    lines += ["", "The active pack decides the writer style, the hook, the visuals and the hashtags."]
+    return "\n".join(lines)
+
+
+def _pack_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .hq import get_active_pack_id
+    from .packs import PACKS
+
+    active = get_active_pack_id()
+    rows: list[list[dict[str, str]]] = []
+    for pack in PACKS.values():
+        mark = "✅ " if pack.pack_id == active else ""
+        rows.append([_button(f"{mark}{pack.label[:40]}", f"pack_set:{pack.pack_id}")])
+    rows.append([_button("🔙 Back", "nav:studio")])
+    return {"inline_keyboard": rows}
+
+
+def _series_pack_keyboard() -> str:
+    from .packs import SERIES_PACKS, PACKS
+
+    rows = [
+        [_button(PACKS[pack_id].label[:40], f"series_pack:{pack_id}")]
+        for pack_id in SERIES_PACKS
+    ]
+    rows.append([_button("🔙 Back", "series_panel")])
+    return {"inline_keyboard": rows}
+
+
+def _series_cadence_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    from .series import CADENCES
+
+    rows = [
+        [_button(str(info["label"]), f"series_cadence:{key}")]
+        for key, info in CADENCES.items()
+    ]
+    rows.append([_button("🔙 Back", "series_panel")])
+    return {"inline_keyboard": rows}
+
+
 def _build_queue_message() -> str:
     jobs = list_jobs()
     if not jobs:
@@ -3318,6 +3466,153 @@ async def handle_update(update: dict[str, Any]) -> None:
                 _pending_custom_creator.discard(chat_id)
                 _pending_custom_part_count.pop(chat_id, None)
                 await send_message(chat_id, "↩️ Custom Creator cancelled.", _keyboard())
+
+            elif data == "series_panel":
+                await send_message(chat_id, _build_series_panel(), _series_keyboard())
+
+            elif data.startswith("series:"):
+                series_id = data.split(":", 1)[1]
+                await send_message(
+                    chat_id,
+                    _build_series_card(series_id),
+                    _series_card_keyboard(series_id),
+                )
+
+            elif data == "series_new":
+                _pending_series_topic[chat_id] = ""
+                await send_message(
+                    chat_id,
+                    "📚 <b>New story series</b>\n"
+                    f"{_divider()}\n\n"
+                    "  Send the story idea in one line: the topic, the world or the "
+                    "conflict you want the six parts to tell.\n\n"
+                    "  Example: <i>शेरू भाई का सबसे बड़ा दुश्मन</i>",
+                    {"inline_keyboard": [[_button("❌ Cancel", "series_panel")]]},
+                )
+
+            elif data.startswith("series_pack:"):
+                pack_id = data.split(":", 1)[1]
+                _pending_series_pack[chat_id] = pack_id
+                await send_message(
+                    chat_id,
+                    "🎭 <b>Choose the format pack</b>\n"
+                    f"{_divider()}\n\n"
+                    "  The pack decides the character, the story beats, the hook and the look.",
+                    _series_pack_keyboard(),
+                )
+
+            elif data.startswith("series_cadence:"):
+                cadence = data.split(":", 1)[1]
+                topic = _pending_series_topic.get(chat_id, "").strip()
+                pack_id = _pending_series_pack.get(chat_id, "")
+                _pending_series_topic.pop(chat_id, None)
+                _pending_series_pack.pop(chat_id, None)
+                if not topic or not pack_id:
+                    await send_message(chat_id, "⚠️ Start the series again from the series panel.", _keyboard())
+                    return
+                from .series import create_series, series_state
+
+                progress_message_id = await send_progress_message(
+                    chat_id,
+                    "📚 <b>Planning the story…</b>\n"
+                    "<code>[████░░░░]  Series bible</code>\n"
+                    "<code>[░░░░░░░░]  Six parts with cliffhangers</code>\n"
+                    "<code>[░░░░░░░░]  Character and scene direction</code>",
+                )
+                try:
+                    series, jobs = create_series(
+                        topic,
+                        pack_id,
+                        part_count=6,
+                        cadence=cadence,
+                        budget_usd=5.0,
+                        platform=get_publish_target(),
+                    )
+                    state = series_state(series.id)
+                    await finish_progress_message(
+                        chat_id,
+                        progress_message_id,
+                        (
+                            f"✅ <b>Series planned: {html.escape(str(state['topic']))}</b>\n"
+                            f"{_divider()}\n\n"
+                            f"  Parts: {state['part_count']} · Cadence: {html.escape(str(state['cadence_label']))}\n"
+                            f"  Budget cap: ${float(state['budget_usd']):.2f}\n\n"
+                            "  भाग 1 is queued for its script. The other parts stay held until "
+                            "the part before them is live.\n\n"
+                            "  🛡️ Publishing still needs your approval."
+                        ),
+                        _series_card_keyboard(series.id),
+                    )
+                    progress_message_id = None
+                except Exception as exc:
+                    logger.exception("Series creation failed")
+                    await finish_progress_message(
+                        chat_id,
+                        progress_message_id,
+                        f"⚠️ Could not create the series: {_safe_error_text(exc)}",
+                        _keyboard(),
+                    )
+                    progress_message_id = None
+
+            elif data.startswith("series_release:"):
+                from .series import release_next_part, series_state
+
+                series_id = data.split(":", 1)[1]
+                try:
+                    released = release_next_part(series_id)
+                except Exception as exc:
+                    await send_message(chat_id, f"⚠️ {_safe_error_text(exc)}", _keyboard())
+                    return
+                await send_message(
+                    chat_id,
+                    (
+                        "⏭ <b>Next part released</b>\n\n"
+                        + (
+                            f"  भाग {released.id[-3:]} is now queued for production."
+                            if released is not None
+                            else "  Every part of this series is already live."
+                        )
+                    ),
+                    _series_card_keyboard(series_id),
+                )
+
+            elif data.startswith("series_status:"):
+                from .series import set_series_status, series_state
+
+                parts = data.split(":")
+                if len(parts) != 3:
+                    await send_message(chat_id, "⚠️ Invalid series action.", _keyboard())
+                    return
+                series_id, status = parts[1], parts[2]
+                try:
+                    set_series_status(series_id, status)
+                except Exception as exc:
+                    await send_message(chat_id, f"⚠️ {_safe_error_text(exc)}", _keyboard())
+                    return
+                await send_message(
+                    chat_id,
+                    _build_series_card(series_id),
+                    _series_card_keyboard(series_id),
+                )
+
+            elif data == "pack_panel":
+                await send_message(chat_id, _build_pack_panel(), _pack_keyboard())
+
+            elif data.startswith("pack_set:"):
+                from .hq import set_active_pack
+
+                pack_id = data.split(":", 1)[1]
+                try:
+                    label = set_active_pack(pack_id)
+                except ValueError:
+                    await send_message(chat_id, "⚠️ Unknown format pack.", _keyboard())
+                    return
+                await send_message(
+                    chat_id,
+                    f"🎭 <b>Format pack set</b>\n\n  {html.escape(label)}\n\n"
+                    "  New jobs now use this format.",
+                    _pack_keyboard(),
+                )
 
             elif data == "controls":
                 await send_message(chat_id, _build_controls_message(), _controls_keyboard())
@@ -4821,6 +5116,29 @@ async def handle_update(update: dict[str, Any]) -> None:
 
         # ── Text command handling ───────────────────────────────────
         text = (message.get("text") or "").strip()
+
+        if chat_id in _pending_series_topic:
+            if text == "/cancel":
+                _pending_series_topic.pop(chat_id, None)
+                _pending_series_pack.pop(chat_id, None)
+                await send_message(chat_id, "↩️ Series creation cancelled.", _series_keyboard())
+                return
+            topic = " ".join(text.split()).strip()
+            if not topic:
+                await send_message(chat_id, "⚠️ Send the story idea in one line.", _keyboard())
+                return
+            if len(topic) > 240:
+                await send_message(chat_id, "⚠️ Keep the story idea under 240 characters.", _keyboard())
+                return
+            _pending_series_topic[chat_id] = topic
+            await send_message(
+                chat_id,
+                f"📚 <b>Story: {html.escape(topic)}</b>\n"
+                f"{_divider()}\n\n"
+                "  Choose the format pack for this series.",
+                _series_pack_keyboard(),
+            )
+            return
 
         if chat_id in _pending_custom_creator:
             if text == "/cancel":

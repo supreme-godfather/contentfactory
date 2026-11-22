@@ -407,6 +407,73 @@ database, applied immediately, no redeploy:
   offline. This selects the compute worker, not an AI video-generation API; no
   external video-generation API is connected.
 
+## Format packs and story series (2026-11-22)
+
+The engine can now produce a **format pack** — a complete, versioned definition
+of what a reel is — and tell **one story in six parts**.
+
+### Packs (`app/packs.py`)
+
+A pack carries the writer directives, the visual anchor, the hook grammar, the
+beat map, the dialogue style, the caption treatment, the title formula and the
+hashtag pool. The six legacy niches are kept as packs so nothing that already
+worked changed. Two packs are new and series-ready:
+
+- **`cinematic_boss_series`** — a recurring **original** cinematic character
+  (an anthropomorphic panther boss) in a multi-part story: a dramatic entrance,
+  rising stakes and a hard cliffhanger every part. The character is locked with
+  a reference sheet that MiniMax generates once per series and that becomes the
+  **first frame of every shot**, so the same character appears in every scene.
+  The format follows the viral cinematic-boss wave without copying any existing
+  creator's character.
+- **`desi_boss_monologue`** — the script-only version: one narrator, contrast
+  humour, exaggerated money lines, no character image needed. Runs on the
+  current engine and costs the least per part.
+
+Telegram: **Studio → 🎭 Format pack**. API: `GET /api/packs`.
+
+### Story series (`app/series.py`)
+
+One model call produces the **series bible** (logline, locked character,
+setting, and the beats, cliffhanger and teaser of every part). The engine then
+creates one job per part and releases them one at a time:
+
+- Part 1 is queued for its script; parts 2-6 stay **held** until the part
+  before them is live.
+- Every part ends on the cliffhanger the plan promised — the engine restores
+  the promised line if the editor pass rewrote it, and the quality gate
+  blocks a part that lost it.
+- Part N+1 opens with a recap of part N.
+- A part cannot publish before the previous one is published.
+- A series never spends more than its budget (`$5` by default), checked before
+  every media generation.
+
+The owner chooses the release cadence in Telegram: **1 part per day**,
+**2 parts per day**, **I will publish each part myself**, or **the engine
+picks the gap from analytics** (18-24 h depending on the channel's watch time).
+
+Telegram: **Studio → 📚 Story series**. API: `GET /api/series`,
+`POST /api/series`, `GET /api/series/{id}`, `POST /api/series/{id}/release`,
+`POST /api/series/{id}/status`.
+
+### Automation added with it
+
+- `script_pipeline_loop` drafts queued work on its own, so a released part
+  starts producing without anyone touching the bot.
+- `scheduled_publish_loop` publishes approved parts when their release window
+  arrives (only when auto-publish is on).
+- A released part is produced ahead of its window, so the audience of the
+  previous part is still warm when the next one lands.
+
+### Reasoning-model fix
+
+MiniMax M3.1-Flash is a reasoning model: it could spend the whole token budget
+thinking and return **no answer at all**, which silently degraded the engine to
+template scripts and template metadata. The chat helper now strips inline
+reasoning, retries with a larger budget when the model only thought, and the
+metadata, hook, script and research passes use budgets that leave room for the
+answer.
+
 ## Media quality control, preflight and health (2026-11-22)
 
 The engine now measures what it renders and refuses to publish media it has

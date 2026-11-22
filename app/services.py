@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlalchemy import or_, select, text, update
 
 from .config import get_settings
-from .db import ContentJob, FactorySetting, PublicationRecord, SessionLocal, WorkerLease
+from .db import ContentJob, ContentSeries, FactorySetting, PublicationRecord, SessionLocal, WorkerLease
 from .google_media import create_job_assets
 from .media_qc import evaluate_report
 from .publishers import get_publisher
@@ -104,6 +104,10 @@ def _apply_ai_publishing_package(
     title = str(metadata.get("title") or "")
     description = str(metadata.get("description") or "")
     tags = list(metadata.get("tags") or [])
+    series_caption = str(metadata.get("series_caption") or "").strip()
+    if series_caption:
+        title = f"{title} ({series_caption})"[:100]
+        description = f"{series_caption}\n\n{description}"
     metadata["youtube"] = {
         "title": title[:100],
         "description": f"{description}\n\n{' '.join(hashtags[:3])}" if hashtags else description,
@@ -411,7 +415,15 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
         format_info = get_format()
         niche_label = get_niche_label()
         from .auto_flow import resolve_genre
+        from .packs import get_pack
 
+        series_context = _series_context_for_job(job_id)
+        pack_id = str(series_context.get("pack_id") or "") or None
+        if pack_id is None:
+            from .hq import get_active_pack_id
+
+            pack_id = get_active_pack_id()
+        pack = get_pack(pack_id)
         genre, genre_reason = resolve_genre(topic)
         package = build_script_package(
             topic,
@@ -420,6 +432,8 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
             niche=niche_label,
             facts=facts,
             genre=genre,
+            pack_id=pack_id,
+            series_context=series_context or None,
         )
         script = str(package.get("script") or "")
         package_metadata = package.get("metadata") or {}
@@ -448,7 +462,9 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
             "target_duration_seconds": format_info["target_duration_seconds"],
             "story_arc": [scene["stage"] for scene in storyboard],
             "storyboard": storyboard,
-            "style_anchor": STYLE_ANCHOR,
+            "style_anchor": pack.visual_anchor or STYLE_ANCHOR,
+            "pack_id": pack.pack_id,
+            "pack_label": pack.label,
             "visual_direction": (
                 "dark cinematic faceless Reel; high-contrast captions; original visuals; no creator copying"
                 if format_key == "reel"
@@ -469,6 +485,14 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
             "genre_reason": genre_reason,
         }
         metadata = _apply_ai_publishing_package(metadata, package_metadata, format_key)
+        if series_context:
+            metadata.update(
+                {
+                    key: value
+                    for key, value in series_context.items()
+                    if key not in {"assets", "assets_version"}
+                }
+            )
         if package.get("critic", {}).get("applied"):
             metadata["script_polished"] = True
     except Exception as exc:
@@ -536,6 +560,111 @@ def approve_script(job_id: str, approver_id: int, expected_version: int) -> Cont
         return job
 
 
+def _series_context_for_job(job_id: str) -> dict[str, object]:
+    """The series context of a job: its part, its neighbours and its ending."""
+    with SessionLocal() as session:
+        job = session.get(ContentJob, job_id)
+        if job is None or not job.series_id:
+            return {}
+        try:
+            metadata = json.loads(job.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        part_index = int(metadata.get("part_index") or 1)
+        previous_recap = str(metadata.get("previous_recap") or "")
+    if part_index > 1 and not previous_recap:
+        previous_recap = _previous_part_recap(job.series_id, part_index)
+    context = {
+        key: value
+        for key, value in metadata.items()
+        if key
+        in {
+            "series_id",
+            "part_index",
+            "part_count",
+            "part_title",
+            "part_beats",
+            "cliffhanger",
+            "teaser",
+            "series_logline",
+            "series_character",
+            "series_setting",
+            "pack_id",
+            "pack_label",
+            "series_caption",
+        }
+    }
+    if previous_recap:
+        context["previous_recap"] = previous_recap
+    return context
+
+
+def _previous_part_recap(series_id: str, part_index: int) -> str:
+    """One line that reminds the viewer what happened in the previous part."""
+    from .series import series_jobs
+
+    for other in series_jobs(series_id):
+        try:
+            other_metadata = json.loads(other.metadata_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        other_index = int(other_metadata.get("part_index") or 0)
+        if other_index != part_index - 1:
+            continue
+        title = str(other_metadata.get("part_title") or "").strip()
+        script = (other.script_text or "").strip()
+        if script:
+            first_line = script.split("\n\n")[0].strip()
+            return (first_line or title)[:220]
+        return title[:220]
+    return ""
+
+
+def _series_character_reference(
+    job_id: str,
+    metadata: dict[str, object],
+    media_root: Path,
+) -> Path | None:
+    """Return the character sheet for a series, generating it once if needed.
+
+    The sheet is the first frame of every generated shot, so the same character
+    appears in every scene of every part of the story.
+    """
+    series_id = metadata.get("series_id")
+    if not isinstance(series_id, str) or not series_id:
+        return None
+    from .packs import get_pack
+    from .series import get_series
+
+    series = get_series(series_id)
+    if series is None:
+        return None
+    pack = get_pack(series.pack_id)
+    if not pack.needs_character_image:
+        return None
+    media_root.mkdir(parents=True, exist_ok=True)
+    if series.character_asset:
+        existing = media_root / series.character_asset
+        if existing.is_file():
+            return existing
+    try:
+        from .google_media import generate_minimax_image
+
+        filename = f"{series_id}-character.jpg"
+        destination = media_root / filename
+        generate_minimax_image(pack.character_prompt, destination)
+    except Exception as exc:
+        logger.warning("Character sheet generation failed: %s", exc)
+        return None
+    with SessionLocal() as session:
+        stored = session.get(ContentSeries, series_id)
+        if stored is not None:
+            stored.character_asset = filename
+            stored.updated_at = datetime.now(timezone.utc)
+            session.commit()
+    return destination
+
+
 def generate_assets(job_id: str, expected_version: int) -> ContentJob:
     """Generate paid assets only for an explicitly approved script version."""
     with SessionLocal() as session:
@@ -581,10 +710,15 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
     from .cost import enforce_cost_ceiling
 
     enforce_cost_ceiling(job_id, metadata, script)
+    if metadata.get("series_id"):
+        from .cost import enforce_series_budget
+
+        enforce_series_budget(str(metadata["series_id"]))
     try:
         from .job_inputs import get_custom_voiceover
 
         custom_voiceover = get_custom_voiceover(metadata)
+        character_reference = _series_character_reference(job_id, metadata, media_root)
         assets = create_job_assets(
             job_id,
             topic,
@@ -593,6 +727,8 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
             storyboard=storyboard if isinstance(storyboard, list) else [],
             thumbnail_prompt=str(metadata.get("thumbnail_prompt") or "") or None,
             custom_voiceover=custom_voiceover or None,
+            character_reference=character_reference,
+            character_prompt=str(metadata.get("series_character") or "") or None,
         )
         from .audio_catalog import get_default_audio_asset
 
@@ -872,6 +1008,21 @@ def publish_job(job_id: str, only_platforms: list[str] | None = None) -> Content
         )
         if not report.passed:
             raise ValueError(f"Quality gate blocked publication: {', '.join(report.blockers)}")
+        if job.series_id:
+            from .series import earlier_part, publish_order_ok
+
+            if not publish_order_ok(job):
+                earlier = earlier_part(job)
+                earlier_index = 0
+                if earlier is not None:
+                    try:
+                        earlier_metadata = json.loads(earlier.metadata_json or "{}")
+                    except json.JSONDecodeError:
+                        earlier_metadata = {}
+                    earlier_index = int(earlier_metadata.get("part_index") or 0)
+                raise ValueError(
+                    f"This is part of a story series: publish part {earlier_index} first."
+                )
         platforms = ["youtube", "instagram"] if job.platform == "both" else [job.platform]
         if only_platforms:
             allowed = {
@@ -984,7 +1135,19 @@ def publish_job(job_id: str, only_platforms: list[str] | None = None) -> Content
         job.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(job)
-        return job
+    if job.series_id:
+        _release_next_series_part(job.series_id)
+    return job
+
+
+def _release_next_series_part(series_id: str) -> None:
+    """Unlock the next part of a story after the current one went out."""
+    try:
+        from .series import release_next_part
+
+        release_next_part(series_id)
+    except Exception:
+        logger.warning("Could not release the next series part for %s", series_id, exc_info=True)
 
 
 def set_paused(paused: bool) -> None:
@@ -1157,6 +1320,12 @@ def _maybe_auto_publish(job: ContentJob) -> ContentJob:
         return job
     if job.platform not in {"youtube", "instagram", "both"}:
         return job
+    if job.scheduled_at is not None:
+        scheduled_at = job.scheduled_at
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        if scheduled_at > datetime.now(timezone.utc):
+            return job
     try:
         if job.status == "awaiting_approval":
             job = approve_job(job.id, 0, job.content_version)

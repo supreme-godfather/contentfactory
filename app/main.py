@@ -12,7 +12,13 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from .automation import automation_enabled, automation_loop, run_automation_cycle, set_automation_enabled
-from .auto_flow import asset_pipeline_loop, create_trend_batch, publish_retry_loop
+from .auto_flow import (
+    asset_pipeline_loop,
+    create_trend_batch,
+    publish_retry_loop,
+    scheduled_publish_loop,
+    script_pipeline_loop,
+)
 from .backups import create_backup_archive, restore_backup_archive
 from .config import get_settings
 from .db import ClipCandidate, ContentJob, SessionLocal, init_db
@@ -53,12 +59,14 @@ async def lifespan(_: FastAPI):
     automation_task = asyncio.create_task(automation_loop())
     asset_task = asyncio.create_task(asset_pipeline_loop())
     retry_task = asyncio.create_task(publish_retry_loop())
+    scheduled_task = asyncio.create_task(scheduled_publish_loop())
+    script_task = asyncio.create_task(script_pipeline_loop())
     try:
         yield
     finally:
-        for task in (telegram_task, automation_task, asset_task, retry_task):
+        for task in (automation_task, asset_task, retry_task, scheduled_task, script_task):
             task.cancel()
-        for task in (telegram_task, automation_task, asset_task, retry_task):
+        for task in (automation_task, asset_task, retry_task, scheduled_task, script_task):
             try:
                 await task
             except asyncio.CancelledError:
@@ -1414,6 +1422,21 @@ class HookRequest(BaseModel):
     index: int = Field(ge=0, le=2)
 
 
+class SeriesRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=240)
+    pack_id: str = Field(min_length=1, max_length=60)
+    part_count: int = Field(default=6, ge=2, le=12)
+    cadence: str = Field(default="daily", pattern="^(daily|twice_daily|manual|auto)$")
+    budget_usd: float = Field(default=5.0, gt=0, le=50)
+    platform: str = Field(default="instagram", pattern="^(youtube|instagram|both)$")
+
+
+class SeriesStatusRequest(BaseModel):
+    status: str = Field(
+        pattern="^(planned|producing|releasing|complete|paused|cancelled)$"
+    )
+
+
 @app.post("/api/admin/jobs/{job_id}/hook")
 def apply_hook_endpoint(
     job_id: str,
@@ -1432,6 +1455,95 @@ def apply_hook_endpoint(
         "content_version": job.content_version,
         "script": job.script_text,
     }
+
+
+@app.get("/api/series")
+def list_series_endpoint(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    from .series import list_series, series_state
+
+    return [series_state(series.id) for series in list_series()]
+
+
+@app.post("/api/series")
+def create_series_endpoint(
+    request: SeriesRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .series import create_series, series_state
+
+    try:
+        series, jobs = create_series(
+            request.topic,
+            request.pack_id,
+            part_count=request.part_count,
+            cadence=request.cadence,
+            budget_usd=request.budget_usd,
+            platform=request.platform,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state = series_state(series.id)
+    state["job_ids"] = [job.id for job in jobs]
+    return state
+
+
+@app.get("/api/series/{series_id}")
+def series_detail(series_id: str, _: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .series import series_state
+
+    try:
+        return series_state(series_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/series/{series_id}/status")
+def series_status_endpoint(
+    series_id: str,
+    request: SeriesStatusRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .series import set_series_status, series_state
+
+    try:
+        set_series_status(series_id, request.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return series_state(series_id)
+
+
+@app.post("/api/series/{series_id}/release")
+def series_release_endpoint(
+    series_id: str,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .series import release_next_part, series_state
+
+    try:
+        released = release_next_part(series_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    state = series_state(series_id)
+    state["released_job_id"] = released.id if released is not None else None
+    return state
+
+
+@app.get("/api/packs")
+def list_packs(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    from .packs import PACKS
+
+    return [
+        {
+            "pack_id": pack.pack_id,
+            "label": pack.label,
+            "summary": pack.summary,
+            "series_ready": pack.series_ready,
+            "default_parts": pack.default_parts,
+            "needs_character_image": pack.needs_character_image,
+            "hook_types": list(pack.hook_types),
+        }
+        for pack in PACKS.values()
+    ]
 
 
 @app.get("/api/health/pipeline")

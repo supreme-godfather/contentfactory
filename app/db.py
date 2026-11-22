@@ -35,8 +35,26 @@ class ContentJob(Base):
     schedule_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    series_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class ContentSeries(Base):
+    __tablename__ = "content_series"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    topic: Mapped[str] = mapped_column(String(240))
+    pack_id: Mapped[str] = mapped_column(String(60), index=True)
+    part_count: Mapped[int] = mapped_column(Integer, default=6)
+    status: Mapped[str] = mapped_column(String(40), default="planned", index=True)
+    cadence: Mapped[str] = mapped_column(String(30), default="daily")
+    budget_usd: Mapped[float] = mapped_column(Float, default=5.0)
+    gap_hours: Mapped[int] = mapped_column(Integer, default=24)
+    plan_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    character_asset: Mapped[str | None] = mapped_column(String(240), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -273,3 +291,6 @@ def init_db() -> None:
             connection.execute(text("ALTER TABLE content_jobs ADD COLUMN scheduled_at TIMESTAMP"))
         if "schedule_notified_at" not in columns:
             connection.execute(text("ALTER TABLE content_jobs ADD COLUMN schedule_notified_at TIMESTAMP"))
+        if "series_id" not in columns:
+            connection.execute(text("ALTER TABLE content_jobs ADD COLUMN series_id VARCHAR(36)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_content_jobs_series_id ON content_jobs (series_id)"))

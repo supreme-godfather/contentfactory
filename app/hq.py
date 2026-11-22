@@ -107,6 +107,37 @@ def set_niche(key: str) -> str:
     return NICHE_PRESETS[key]
 
 
+def get_active_pack_id() -> str:
+    """The format pack used for new jobs.
+
+    An explicitly chosen pack wins. Otherwise the pack that matches the
+    current niche is used, so the six legacy niches keep working unchanged.
+    """
+    from .packs import DEFAULT_PACK_ID, PACKS
+
+    explicit = _get("pack")
+    if explicit and explicit in PACKS:
+        return explicit
+    niche = get_niche_key()
+    for pack_id, pack in PACKS.items():
+        if pack.legacy_niche == niche:
+            return pack_id
+    return DEFAULT_PACK_ID
+
+
+def set_active_pack(pack_id: str) -> str:
+    """Choose the format pack for new jobs."""
+    from .packs import PACKS
+
+    if pack_id not in PACKS:
+        raise ValueError("Unknown format pack")
+    pack = PACKS[pack_id]
+    _set("pack", pack_id)
+    if pack.legacy_niche:
+        _set("niche", pack.legacy_niche)
+    return pack.label
+
+
 def get_format_key() -> str:
     key = _get("default_format")
     return key if key in FORMATS else DEFAULT_FORMAT_KEY

@@ -29,6 +29,49 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### OpenCode — 2026-11-22 (format packs, six-part story series)
+
+- **Task:** Research the viral "Sheru Bhai" reels, then add a custom niche pack
+  system and a six-part story feature with a better automation practice.
+- **Status:** Implemented, tested (308 passed) and deployed to the API. Verified
+  live: a six-part series was planned in Hindi, part 1 was scripted with an AI
+  title, AI hashtags, a cover concept, three hook variants and the promised
+  cliffhanger, and parts 2-6 stayed held.
+- **Research:** Sheru Bhai is a fictional AI lion-headed millionaire (originator
+  @digitalsheru, 450K; one reel at 4.3M views). The format is a recurring
+  character in short cinematic scenes: dramatic entrances, absurd escalation,
+  a punchline, 10-20 seconds. The recurring failure mode is the character
+  changing between shots, which the reference-sheet + first-frame workflow
+  solves.
+- **Packs (`app/packs.py`):** a pack is a complete format definition (writer
+  directives, visual anchor, hook grammar, beat map, dialogue style, caption
+  style, title formula, hashtag pool). The six legacy niches are kept as packs.
+  New: `cinematic_boss_series` (original recurring character) and
+  `desi_boss_monologue` (script only). Telegram: Studio → 🎭 Format pack.
+- **Series (`app/series.py`, new table `content_series`):** one model call plans
+  the series bible; one job per part; parts 2-6 are held until the previous
+  part is live; the promised cliffhanger is enforced by the engine and by the
+  quality gate; part N+1 opens with a recap; a part cannot publish before its
+  predecessor; a series never spends past its budget. The owner chooses the
+  cadence in Telegram (1/day, 2/day, manual, analytics-driven).
+- **Character consistency:** `generate_minimax_image` (image-01) makes a
+  character sheet once per series, and `generate_minimax_video` now sends it as
+  `first_frame_image`, so every shot shows the same character. MiniMax H3
+  image-to-video is used only when the model accepts the reference; otherwise
+  the call falls back to text-to-video instead of failing the render.
+- **Automation:** `script_pipeline_loop` drafts queued work on its own and
+  `scheduled_publish_loop` publishes approved parts when their window arrives.
+- **Reasoning-model fix:** MiniMax M3.1-Flash spends its token budget thinking
+  and sometimes returned no answer at all, which silently degraded scripts and
+  metadata to templates. The chat helper now strips inline reasoning, retries
+  with a larger budget, and every pass uses a budget that leaves room for the
+  answer.
+- **Next action for the owner:** try **Studio → 📚 Story series** in Telegram.
+  Publishing stays OFF, mock mode stays ON and auto mode stays OFF until the
+  owner says otherwise. The 7 YouTube videos and 7 Instagram Reels from the
+  first batch are still live and still need the YouTube reconnect plus an
+  Instagram token with `instagram_manage_media` before they can be deleted.
+
 ### OpenCode — 2026-11-22 (media QC, publish preflight, pipeline health)
 
 - **Task:** Make the engine more reliable and more useful as a professional

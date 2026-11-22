@@ -9,7 +9,7 @@ The owner picks the mode in Telegram:
 """
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -178,6 +178,88 @@ async def publish_retry_loop(interval: float = 1200.0) -> None:
                     logger.debug("Publish retry still blocked for %s", job_id)
         except Exception:
             logger.warning("Publish retry loop error", exc_info=True)
+
+
+async def script_pipeline_loop(interval: float = 20.0) -> None:
+    """Draft scripts for queued work so the factory keeps moving on its own.
+
+    Series parts are drafted as soon as they are released. Other queued jobs are
+    picked up after a short delay, so a job created from Telegram or the API is
+    never raced by this loop.
+    """
+    import asyncio
+
+    from .db import ContentJob
+    from .services import generate_content
+
+    while True:
+        try:
+            await asyncio.sleep(max(5.0, interval))
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=90)
+            with SessionLocal() as session:
+                pending = list(
+                    session.scalars(
+                        select(ContentJob)
+                        .where(
+                            ContentJob.status == "queued",
+                            ContentJob.stage == "topic",
+                        )
+                        .order_by(ContentJob.created_at.asc())
+                        .limit(3)
+                    )
+                )
+            for job in pending:
+                created = job.created_at
+                if created is not None and created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if job.series_id is None and created is not None and created > cutoff:
+                    continue
+                try:
+                    await asyncio.to_thread(generate_content, job.id)
+                except Exception:
+                    logger.debug("Script pipeline skipped %s", job.id)
+        except Exception:
+            logger.warning("Script pipeline loop error", exc_info=True)
+
+
+async def scheduled_publish_loop(interval: float = 180.0) -> None:
+    """Publish approved jobs whose scheduled time has arrived.
+
+    Series parts are produced ahead of their release window so the audience of
+    the previous part is still warm when the next one lands. This loop only
+    publishes what the quality gate already approved, and only when the owner
+    has enabled automatic publishing.
+    """
+    import asyncio
+
+    from .db import ContentJob
+    from .hq import is_auto_publish_enabled
+    from .services import publish_job
+
+    while True:
+        try:
+            await asyncio.sleep(max(60.0, interval))
+            if not is_auto_publish_enabled():
+                continue
+            now = datetime.now(timezone.utc)
+            with SessionLocal() as session:
+                due = list(
+                    session.scalars(
+                        select(ContentJob).where(
+                            ContentJob.status == "approved",
+                            ContentJob.approval_version == ContentJob.content_version,
+                            ContentJob.scheduled_at.is_not(None),
+                            ContentJob.scheduled_at <= now,
+                        )
+                    )
+                )
+            for job in due:
+                try:
+                    publish_job(job.id)
+                except Exception:
+                    logger.debug("Scheduled publish still waiting for %s", job.id)
+        except Exception:
+            logger.warning("Scheduled publish loop error", exc_info=True)
 
 
 def create_trend_batch(count: int = 10) -> list[str]:

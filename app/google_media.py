@@ -3,6 +3,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -193,7 +194,56 @@ def generate_huggingface_image(prompt: str, destination: Path) -> None:
     destination.write_bytes(response.content)
 
 
-def generate_minimax_video(prompt: str, destination: Path) -> None:
+def generate_minimax_image(prompt: str, destination: Path) -> None:
+    """Generate one image with MiniMax image-01."""
+    settings = get_settings()
+    api_key = settings.minimax_api_key or get_provider_secret("minimax")
+    if not api_key:
+        raise RuntimeError("MiniMax image generation requires a configured API key.")
+    base_url = settings.minimax_base_url.rstrip("/")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._/-]*)?", base_url):
+        raise RuntimeError("MINIMAX_BASE_URL must be an HTTPS API base URL.")
+    response = httpx.post(
+        f"{base_url}/image_generation",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "image-01",
+            "prompt": prompt[:1500],
+            "aspect_ratio": "9:16",
+            "n": 1,
+        },
+        timeout=180,
+    )
+    if response.status_code >= 400:
+        detail = response.text[:800].replace(api_key, "[REDACTED]")
+        raise RuntimeError(
+            f"MiniMax image_generation returned HTTP {response.status_code}: {detail}"
+        )
+    urls = (response.json().get("data") or {}).get("image_urls") or []
+    if not urls:
+        raise RuntimeError("MiniMax returned success without an image URL.")
+    downloaded = httpx.get(str(urls[0]), timeout=180, follow_redirects=True)
+    downloaded.raise_for_status()
+    if not downloaded.content:
+        raise RuntimeError("MiniMax returned an empty image.")
+    destination.write_bytes(downloaded.content)
+
+
+def _image_data_url(path: Path) -> str:
+    suffix = path.suffix.lower()
+    mime = "image/png" if suffix == ".png" else "image/jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode()
+    return f"data:{mime};base64,{encoded}"
+
+
+def generate_minimax_video(
+    prompt: str,
+    destination: Path,
+    first_frame: Path | None = None,
+) -> None:
     settings = get_settings()
     # H3 video consumes the pay-as-you-go Platform API key only. The M Plan
     # subscription key is intentionally kept separate for text/research APIs.
@@ -209,18 +259,47 @@ def generate_minimax_video(prompt: str, destination: Path) -> None:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    content: list[dict[str, object]] = [{"type": "text", "text": prompt[:2000]}]
+    payload: dict[str, object] = {
+        "model": settings.minimax_model,
+        "content": content,
+        "duration": max(5, min(10, settings.minimax_duration_seconds)),
+        "resolution": "768P",
+    }
+    if first_frame is not None and first_frame.is_file():
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": _image_data_url(first_frame)},
+            }
+        )
+    else:
+        payload["ratio"] = "9:16"
+
     submitted = httpx.post(
         f"{base_url}/video_generation",
         headers=headers,
-        json={
-            "model": settings.minimax_model,
-            "content": [{"type": "text", "text": prompt[:2000]}],
-            "duration": max(5, min(10, settings.minimax_duration_seconds)),
-            "ratio": "9:16",
-            "resolution": "768P",
-        },
+        json=payload,
         timeout=180,
     )
+    if submitted.status_code >= 400 and "content" in content:
+        # The image reference form may not be accepted for this model: fall back
+        # to text-to-video instead of failing the whole render.
+        detail = submitted.text[:800].replace(api_key, "[REDACTED]")
+        logger.warning(
+            "MiniMax rejected the reference image (%s); retrying text-to-video: %s",
+            submitted.status_code,
+            detail[:200],
+        )
+        content = [item for item in content if item.get("type") == "text"]
+        payload.pop("ratio", None)
+        payload["ratio"] = "9:16"
+        submitted = httpx.post(
+            f"{base_url}/video_generation",
+            headers=headers,
+            json=payload,
+            timeout=180,
+        )
     if submitted.status_code >= 400:
         detail = submitted.text[:1500].replace(api_key, "[REDACTED]")
         raise RuntimeError(
@@ -325,6 +404,8 @@ def create_job_assets(
     storyboard: list[dict[str, object]] | None = None,
     thumbnail_prompt: str | None = None,
     custom_voiceover: str | None = None,
+    character_reference: Path | None = None,
+    character_prompt: str | None = None,
 ) -> dict[str, str]:
     from .provider_credentials import (
         get_provider_for_role,
@@ -341,6 +422,10 @@ def create_job_assets(
     image_provider = get_provider_for_role("image")
     video_provider = get_provider_for_role("video")
     scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
+    if character_prompt:
+        scene_prompts = [
+            f"{prompt}. {character_prompt[:600]}" for prompt in scene_prompts
+        ]
     generated: list[Path] = []
     try:
         # Expensive provider video is reserved for the hook and the payoff beat.
@@ -358,7 +443,11 @@ def create_job_assets(
             for index in video_scenes:
                 video = media_root / f"{job_id}-scene-video-{index}.mp4"
                 generated.append(video)
-                generate_minimax_video(scene_prompts[index - 1], video)
+                generate_minimax_video(
+                    scene_prompts[index - 1],
+                    video,
+                    first_frame=character_reference,
+                )
                 assets[f"scene_video_{index}"] = video.name
                 record_usage(job_id, "minimax", "video", 5, "second", price)
         elif video_provider == "higgsfield":
@@ -442,6 +531,17 @@ def create_job_assets(
         for path in generated:
             path.unlink(missing_ok=True)
         raise
+
+    if character_reference is not None and character_reference.is_file():
+        # Any scene the image providers could not produce falls back to the
+        # character sheet, so the character stays the same in every shot.
+        for index in range(1, len(scene_prompts) + 1):
+            if f"scene_video_{index}" in assets or f"scene_{index}" in assets:
+                continue
+            image = media_root / f"{job_id}-scene-{index}.jpg"
+            generated.append(image)
+            shutil.copyfile(character_reference, image)
+            assets[f"scene_{index}"] = image.name
 
     voiceover = media_root / f"{job_id}-voiceover.mp3"
     voiceover.with_suffix(".timing.json").unlink(missing_ok=True)
@@ -572,6 +672,11 @@ def _generate_role_asset(
                     return False
             elif provider == "huggingface" and role == "image":
                 generate_huggingface_image(
+                    prompt_override or _image_prompt(topic),
+                    destination,
+                )
+            elif provider == "minimax" and role == "image":
+                generate_minimax_image(
                     prompt_override or _image_prompt(topic),
                     destination,
                 )

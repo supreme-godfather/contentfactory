@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
-from .db import FactorySetting, ProviderUsage, SessionLocal
+from .db import ContentJob, FactorySetting, ProviderUsage, SessionLocal
 
 DEFAULT_UNIT_PRICES: dict[str, float] = {
     "minimax_video_per_second": 0.06,
@@ -84,6 +84,42 @@ def job_cost(job_id: str) -> float:
             )
         )
     return round(float(total or 0.0), 4)
+
+
+def series_spend(series_id: str) -> float:
+    """Everything spent on every part of a series so far."""
+    with SessionLocal() as session:
+        job_ids = list(
+            session.scalars(
+                select(ContentJob.id).where(ContentJob.series_id == series_id)
+            )
+        )
+        if not job_ids:
+            return 0.0
+        total = session.scalar(
+            select(func.coalesce(func.sum(ProviderUsage.cost_usd), 0.0)).where(
+                ProviderUsage.job_id.in_(job_ids)
+            )
+        )
+    return round(float(total or 0.0), 4)
+
+
+def enforce_series_budget(series_id: str) -> dict[str, object]:
+    """Stop a series from spending past its budget."""
+    from .series import get_series
+
+    series = get_series(series_id)
+    if series is None:
+        return {"spent_usd": 0.0, "budget_usd": 0.0, "remaining_usd": 0.0}
+    spent = series_spend(series_id)
+    budget = round(float(series.budget_usd or 0.0), 4)
+    remaining = round(max(0.0, budget - spent), 4)
+    if budget and spent >= budget:
+        raise ValueError(
+            f"This series has used its ${budget:.2f} budget (${spent:.2f} spent); "
+            "raise the budget or pause the series."
+        )
+    return {"spent_usd": spent, "budget_usd": budget, "remaining_usd": remaining}
 
 
 def estimate_job_cost(metadata: dict[str, object], script_text: str) -> dict[str, float]:

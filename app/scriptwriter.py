@@ -17,6 +17,7 @@ the factory never fails because a model was unavailable.
 """
 import json
 import logging
+import re
 
 import httpx
 
@@ -81,12 +82,14 @@ lengthen for the sake of length.
 
 METADATA_SYSTEM = (
     "You write publishing metadata for short-form video. "
-    "You return only compact JSON."
+    "You return only compact JSON. "
+    "Answer immediately with the JSON; keep your thinking short."
 )
 
 RESEARCH_SYSTEM = (
     "You research hookable angles for Hindi short-form video. "
-    "You return only compact JSON and never invent facts."
+    "You return only compact JSON and never invent facts. "
+    "Answer immediately with the JSON; keep your thinking short."
 )
 
 
@@ -224,6 +227,25 @@ def _writer_budget(is_long: bool, is_reel: bool) -> tuple[str, int]:
     return ("135-155 words, about 60 seconds of narration", 80)
 
 
+def _strip_reasoning(text: str) -> str:
+    """Remove any inline reasoning block a model may have left in its answer."""
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return cleaned.strip()
+
+
+def _answer_from_payload(payload: dict) -> str | None:
+    """Read the answer out of a chat response, or None when there is none."""
+    choices = payload.get("choices") or []
+    if not choices:
+        return None
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    cleaned = _strip_reasoning(content)
+    return cleaned or None
+
+
 def _minimax_chat(
     api_key: str,
     system: str,
@@ -236,48 +258,59 @@ def _minimax_chat(
     """Call the MiniMax chat route, rotating keys when one is rejected.
 
     A rejected key must never stop the engine: the next configured key is tried
-    and the working one is remembered for the next job.
+    and the working one is remembered for the next job. MiniMax M3.1-Flash is a
+    reasoning model, so a small token budget can be spent entirely on thinking;
+    when that happens the call is retried with a larger budget.
     """
     candidates = [api_key] + [
         key for key in minimax_text_candidates() if key != api_key
     ]
     last_error: Exception | None = None
     for index, key in enumerate(candidates):
-        try:
-            response = httpx.post(
-                MINIMAX_CHAT_URL,
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-                timeout=120,
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code not in {401, 403}:
-                raise
-            last_error = exc
-            logger.warning(
-                "MiniMax rejected a configured key (%s); trying the next one",
-                exc.response.status_code,
-            )
-            continue
-        if index > 0 or key != api_key:
-            _cache_minimax_key(key)
-        payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
-            raise RuntimeError("The model returned an unusable script response")
-        return content.strip()
+        budget = max(int(max_tokens), 512)
+        for attempt in range(2):
+            try:
+                response = httpx.post(
+                    MINIMAX_CHAT_URL,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        "temperature": temperature,
+                        "max_tokens": budget,
+                    },
+                    timeout=180,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in {401, 403}:
+                    raise
+                last_error = exc
+                logger.warning(
+                    "MiniMax rejected a configured key (%s); trying the next one",
+                    exc.response.status_code,
+                )
+                break
+            answer = _answer_from_payload(response.json())
+            if answer:
+                if index > 0 or key != api_key:
+                    _cache_minimax_key(key)
+                return answer
+            last_error = RuntimeError("The model returned no answer")
+            if attempt == 0 and budget < 8000:
+                budget = min(8000, budget * 3)
+                logger.info(
+                    "MiniMax spent the token budget on reasoning; retrying with %s tokens",
+                    budget,
+                )
+                continue
+            break
     raise last_error or RuntimeError("No MiniMax text key is configured")
 
 
@@ -386,6 +419,9 @@ def _parse_json_array(text: str) -> list[str]:
             payload = None
         if isinstance(payload, list):
             return [str(item).strip() for item in payload if str(item).strip()]
+        quoted = re.findall(r'"([^"]{8,220})"', cleaned)
+        if quoted:
+            return [item.strip() for item in quoted if item.strip()]
     lines = [line.strip(" -*\t") for line in cleaned.splitlines()]
     stripped = []
     for line in lines:
@@ -397,6 +433,56 @@ def _parse_json_array(text: str) -> list[str]:
     return stripped
 
 
+def _series_prompt_block(series_context: dict | None) -> str:
+    """Instructions that keep one part of a series continuous with the rest."""
+    if not series_context:
+        return ""
+    part_index = series_context.get("part_index")
+    part_count = series_context.get("part_count")
+    title = str(series_context.get("part_title") or "").strip()
+    beats = [str(item) for item in (series_context.get("part_beats") or []) if str(item).strip()]
+    recap = str(series_context.get("previous_recap") or "").strip()
+    cliffhanger = str(series_context.get("cliffhanger") or "").strip()
+    character = str(series_context.get("series_character") or "").strip()
+    lines: list[str] = []
+    if title:
+        lines.append(f"Story part title: {title}")
+    if part_count:
+        lines.append(
+            f"This is part {part_index} of {part_count} of one continuous story."
+        )
+    if character:
+        lines.append(f"The recurring character: {character}")
+    if recap:
+        lines.append(
+            "Open with one short line that reminds the viewer what happened before: "
+            f"{recap}"
+        )
+    if beats:
+        lines.append("Cover these beats in order: " + "; ".join(beats) + ".")
+    if cliffhanger:
+        lines.append(
+            "End the narration with exactly this cliffhanger line and nothing after it: "
+            f"{cliffhanger}"
+        )
+    if not lines:
+        return ""
+    return "\nSeries context (follow it exactly):\n" + "\n".join(lines) + "\n"
+
+
+def _enforce_cliffhanger(script: str, series_context: dict | None) -> str:
+    """Make sure a part still ends on the cliffhanger the plan promised."""
+    if not series_context:
+        return script
+    cliffhanger = str(series_context.get("cliffhanger") or "").strip()
+    if not cliffhanger:
+        return script
+    body = script.strip()
+    if body.endswith(cliffhanger):
+        return body
+    return f"{body}\n\n{cliffhanger}"
+
+
 def _script_prompt(
     topic: str,
     niche_label: str,
@@ -405,6 +491,8 @@ def _script_prompt(
     facts: str,
     custom_instruction: str | None,
     genre: dict[str, str] | None = None,
+    pack_directive: str = "",
+    series_context: dict | None = None,
 ) -> str:
     from .genres import genre_directives
     from .lessons import lessons_block
@@ -421,12 +509,15 @@ def _script_prompt(
         if custom_instruction
         else ""
     )
+    pack_block = f"\nFormat pack (follow it):\n{pack_directive}\n" if pack_directive else ""
     return (
         f"Topic: {topic}\n"
         f"Channel niche: {niche_label}\n"
         f"Format: {fmt}\n"
         f"Length: {budget}\n"
         f"{facts}"
+        f"{pack_block}"
+        f"{_series_prompt_block(series_context)}"
         f"{genre_directives(genre)}"
         f"{lessons_block()}"
         f"{RETAIL_RULES}\n"
@@ -443,6 +534,8 @@ def build_script(
     niche: str | None = None,
     custom_instruction: str | None = None,
     genre: dict[str, str] | None = None,
+    pack_id: str | None = None,
+    series_context: dict | None = None,
 ) -> str:
     """Return a ready-to-record narration, or the safe template on any failure."""
     fmt, niche_label = _resolve_format_and_niche(format, niche)
@@ -485,7 +578,20 @@ def build_script(
         logger.debug("Provider lookup failed; using template script", exc_info=True)
         return fallback
 
-    prompt = _script_prompt(topic, niche_label, budget, fmt, "", custom_instruction, genre)
+    from .packs import get_pack, pack_directives
+
+    pack = get_pack(pack_id)
+    prompt = _script_prompt(
+        topic,
+        niche_label,
+        budget,
+        fmt,
+        "",
+        custom_instruction,
+        genre,
+        pack_directive=pack_directives(pack),
+        series_context=series_context,
+    )
     try:
         if provider == "gemini":
             response = httpx.post(
@@ -531,9 +637,8 @@ def build_script(
         elif provider == "minimax":
             content = _minimax_chat(
                 api_key,
-                WRITER_SYSTEM,
                 prompt,
-                max_tokens=2400 if is_long else 1100,
+                max_tokens=4800 if is_long else 2600,
                 temperature=0.78,
             )
         else:
@@ -581,6 +686,8 @@ def build_script_package(
     custom_instruction: str | None = None,
     facts: str = "",
     genre: dict[str, str] | None = None,
+    pack_id: str | None = None,
+    series_context: dict | None = None,
 ) -> dict[str, object]:
     """Draft, critique, and package a script with publishing metadata.
 
@@ -600,6 +707,8 @@ def build_script_package(
         niche=niche_label,
         custom_instruction=custom_instruction,
         genre=genre,
+        pack_id=pack_id,
+        series_context=series_context,
     )
     package: dict[str, object] = {
         "script": script,
@@ -627,7 +736,20 @@ def build_script_package(
 
     if script and len(script.strip()) >= min_chars:
         try:
-            prompt = _script_prompt(topic, niche_label, budget, fmt, facts, custom_instruction, genre)
+            from .packs import get_pack, pack_directives
+
+            pack = get_pack(pack_id)
+            prompt = _script_prompt(
+                topic,
+                niche_label,
+                budget,
+                fmt,
+                facts,
+                custom_instruction,
+                genre,
+                pack_directive=pack_directives(pack),
+                series_context=series_context,
+            )
             review = _minimax_chat(
                 api_key,
                 CRITIC_SYSTEM,
@@ -637,7 +759,7 @@ def build_script_package(
                     "CANDIDATE SCRIPT:\n"
                     f"{script}"
                 ),
-                max_tokens=2400 if is_long else 1200,
+                max_tokens=5000 if is_long else 2800,
                 temperature=0.35,
             )
             if review and len(review.strip()) >= min_chars:
@@ -646,8 +768,21 @@ def build_script_package(
         except Exception:
             logger.warning("Retention editor pass failed; keeping the valid draft", exc_info=True)
 
-    final_script = str(package["script"])
+    final_script = _enforce_cliffhanger(str(package["script"]), series_context)
+    package["script"] = final_script
     try:
+        from .packs import get_pack
+
+        pack = get_pack(pack_id)
+        title_rule = pack.title_formula or "A clear, specific title."
+        caption_rule = pack.caption_style or "Short, readable captions."
+        series_note = ""
+        if series_context and series_context.get("part_count"):
+            series_note = (
+                f"This is part {series_context.get('part_index')} of "
+                f"{series_context.get('part_count')} of a story series. The title must "
+                "stand on its own but hint that the story continues.\n"
+            )
         metadata_prompt = (
             "Return ONLY compact JSON with these keys:\n"
             '{"title_variants": ["three punchy titles, each under 70 characters, no clickbait lies"],'
@@ -655,7 +790,8 @@ def build_script_package(
             ' "hashtags": ["eight to twelve short hashtags"],'
             ' "hook_type": "stat|paradox|visual_reveal|myth|question",'
             ' "thumbnail_concept": "one concrete cover image idea, no text on the image"}\n\n'
-            f"Topic: {topic}\nNiche: {niche_label}\nFormat: {fmt}\n\n"
+            f"Topic: {topic}\nNiche: {niche_label}\nFormat: {fmt}\n"
+            f"Title rule: {title_rule}\nCaption style: {caption_rule}\n{series_note}\n"
             f"NARRATION:\n{final_script[:2500]}"
         )
         payload = _parse_json_object(
@@ -663,7 +799,7 @@ def build_script_package(
                 api_key,
                 METADATA_SYSTEM,
                 metadata_prompt,
-                max_tokens=900,
+                max_tokens=2400,
                 temperature=0.45,
             )
         )
@@ -677,10 +813,13 @@ def build_script_package(
             for item in (payload.get("hashtags") or [])
             if str(item).strip()
         ][:12]
+        pack_hashtags = [
+            item for item in pack.hashtag_pool if item not in hashtags
+        ]
         package["metadata"] = {
             "title_variants": titles,
             "description": " ".join(str(payload.get("description") or "").split())[:1200],
-            "hashtags": hashtags,
+            "hashtags": (hashtags + pack_hashtags)[:12],
             "hook_type": str(payload.get("hook_type") or "")[:24],
             "thumbnail_concept": " ".join(str(payload.get("thumbnail_concept") or "").split())[:300],
         }
@@ -720,7 +859,7 @@ def build_hook_variants(
             api_key,
             METADATA_SYSTEM,
             prompt,
-            max_tokens=420,
+            max_tokens=1600,
             temperature=0.8,
         )
         variants = _parse_json_array(raw)
@@ -778,7 +917,7 @@ def research_topic_angle(topic: str, niche: str | None = None) -> dict[str, obje
                 api_key,
                 RESEARCH_SYSTEM,
                 prompt,
-                max_tokens=800,
+                max_tokens=2000,
                 temperature=0.4,
             )
         )

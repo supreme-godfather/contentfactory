@@ -160,6 +160,39 @@ def _provider_status() -> dict[str, object]:
     }
 
 
+def _series_summary() -> dict[str, object]:
+    """Story series state: how many are running and what they have spent."""
+    try:
+        from .cost import series_spend
+        from .series import list_series, series_state
+
+        series_list = list_series(limit=10)
+    except Exception:
+        return {"count": 0, "active": []}
+    active = []
+    spent = 0.0
+    for series in series_list:
+        state = series_state(series.id)
+        try:
+            used = series_spend(series.id)
+        except Exception:
+            used = 0.0
+        spent += used
+        active.append(
+            {
+                "id": series.id[:8],
+                "topic": series.topic,
+                "status": series.status,
+                "parts": state["part_count"],
+                "published": sum(1 for part in state["parts"] if part["published"]),
+                "cadence": series.cadence,
+                "spent_usd": used,
+                "budget_usd": series.budget_usd,
+            }
+        )
+    return {"count": len(series_list), "spent_usd": round(spent, 4), "active": active}
+
+
 def pipeline_health() -> dict[str, object]:
     """Return a JSON-serialisable health snapshot of the whole pipeline."""
     from .automation import automation_enabled
@@ -237,6 +270,7 @@ def pipeline_health() -> dict[str, object]:
             "interval_seconds": settings.automation_interval_seconds,
         },
         "media_qc": qc,
+        "series": _series_summary(),
         "recent_failures": _recent_failures(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

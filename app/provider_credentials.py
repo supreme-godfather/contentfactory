@@ -112,6 +112,7 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
         "google": "Google Imagen",
         "openai": "OpenAI Images",
         "huggingface": "FLUX.1 Schnell (Hugging Face GPU endpoint)",
+        "minimax": "MiniMax image-01",
         "off": "No AI image",
     },
     "voice": {

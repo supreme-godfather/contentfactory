@@ -74,6 +74,23 @@ def validate_content(*, topic: str, script: str | None, metadata_json: str | Non
             blockers.extend(qc_blockers)
             warnings.extend(qc_warnings)
 
+        if metadata.get("series_id"):
+            try:
+                part_index = int(metadata.get("part_index") or 1)
+            except (TypeError, ValueError):
+                part_index = 1
+            try:
+                part_count = int(metadata.get("part_count") or 0)
+            except (TypeError, ValueError):
+                part_count = 0
+            cliffhanger = str(metadata.get("cliffhanger") or "").strip()
+            if part_count and part_index < part_count and cliffhanger:
+                tail = (script or "")[-260:]
+                if cliffhanger not in tail:
+                    blockers.append("missing_cliffhanger")
+            if part_index > 1 and not metadata.get("previous_recap"):
+                warnings.append("missing_series_recap")
+
     if script and len(script.strip()) >= minimum_script_chars and not is_clip:
         structure = script_structure(script)
         if not structure["has_hook"]:

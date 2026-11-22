@@ -8,6 +8,7 @@ from .db import (
     ClipCandidate,
     ClipJob,
     ContentJob,
+    ContentSeries,
     FactorySetting,
     ProviderCredential,
     PublicationRecord,
@@ -79,6 +80,10 @@ def reset_factory_content() -> dict[str, int]:
             session.delete(candidate)
         for clip_job in list(session.scalars(select(ClipJob))):
             session.delete(clip_job)
+        for series in list(session.scalars(select(ContentSeries))):
+            if series.character_asset:
+                filenames.add(series.character_asset)
+            session.delete(series)
         session.commit()
     deleted_files = 0
     for name in filenames:
