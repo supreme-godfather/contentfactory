@@ -210,34 +210,60 @@ def _series_metadata(series: ContentSeries, plan: SeriesPlan, part: PartPlan) ->
     }
 
 
-def create_series(
+def create_pack_reel(
     topic: str,
     pack_id: str,
     *,
-    part_count: int = DEFAULT_PART_COUNT,
-    cadence: str = "daily",
-    budget_usd: float = DEFAULT_BUDGET_USD,
+    template_id: str | None = None,
     platform: str = "instagram",
     brand: str = "learn_with_elite_explainer",
-    gap_hours: int | None = None,
+    budget_usd: float = DEFAULT_BUDGET_USD,
 ) -> tuple[ContentSeries, list[ContentJob]]:
-    """Plan a series and create one job per part."""
+    """A single reel in a pack's style, with the same character machinery."""
+    from .scene_templates import template_for
+
+    pack = get_pack(pack_id)
+    template = template_for(template_id) if template_id else None
+    plan = plan_series(topic, pack, 1)
+    if template is not None:
+        from dataclasses import replace
+
+        plan = SeriesPlan(
+            topic=plan.topic,
+            pack_id=plan.pack_id,
+            part_count=1,
+            logline=plan.logline,
+            character=plan.character,
+            setting=plan.setting,
+            parts=(
+                replace(
+                    plan.parts[0],
+                    template_id=template.template_id,
+                    title=plan.parts[0].title,
+                ),
+            ),
+        )
+    return _create_series_jobs(plan, cadence="manual", budget_usd=budget_usd, platform=platform, brand=brand)
+
+
+def _create_series_jobs(
+    plan: SeriesPlan,
+    *,
+    cadence: str,
+    budget_usd: float,
+    platform: str,
+    brand: str,
+) -> tuple[ContentSeries, list[ContentJob]]:
     from .services import create_job
 
-    clean_topic = " ".join(topic.split()).strip()
-    if not clean_topic:
-        raise ValueError("A series needs a topic")
-    if cadence not in CADENCES:
-        raise ValueError("Unsupported series cadence")
-    part_count = max(2, min(int(part_count), MAX_PART_COUNT))
-    pack = get_pack(pack_id)
-    plan = plan_series(clean_topic, pack, part_count)
-    hours = gap_hours if gap_hours is not None else int(CADENCES[cadence]["gap_hours"] or 0)
+    clean_topic = " ".join(plan.topic.split()).strip()
+    part_count = len(plan.parts)
+    hours = int(CADENCES[cadence]["gap_hours"] or 0)
 
     with SessionLocal() as session:
         series = ContentSeries(
             topic=clean_topic,
-            pack_id=pack.pack_id,
+            pack_id=plan.pack_id,
             part_count=part_count,
             status="planned",
             cadence=cadence,
@@ -290,6 +316,36 @@ def create_series(
             session.refresh(stored)
             jobs.append(stored)
     return series, jobs
+
+
+def create_series(
+    topic: str,
+    pack_id: str,
+    *,
+    part_count: int = DEFAULT_PART_COUNT,
+    cadence: str = "daily",
+    budget_usd: float = DEFAULT_BUDGET_USD,
+    platform: str = "instagram",
+    brand: str = "learn_with_elite_explainer",
+    gap_hours: int | None = None,
+) -> tuple[ContentSeries, list[ContentJob]]:
+    """Plan a series and create one job per part."""
+    clean_topic = " ".join(topic.split()).strip()
+    if not clean_topic:
+        raise ValueError("A series needs a topic")
+    if cadence not in CADENCES:
+        raise ValueError("Unsupported series cadence")
+    part_count = max(1, min(int(part_count), MAX_PART_COUNT))
+    pack = get_pack(pack_id)
+    plan = plan_series(clean_topic, pack, part_count)
+    hours = gap_hours if gap_hours is not None else int(CADENCES[cadence]["gap_hours"] or 0)
+    return _create_series_jobs(
+        plan,
+        cadence=cadence,
+        budget_usd=budget_usd,
+        platform=platform,
+        brand=brand,
+    )
 
 
 def get_series(series_id: str) -> ContentSeries | None:

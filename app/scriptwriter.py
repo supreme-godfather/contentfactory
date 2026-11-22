@@ -293,8 +293,11 @@ def _minimax_chat(
                     raise
                 last_error = exc
                 logger.warning(
-                    "MiniMax rejected a configured key (%s); trying the next one",
+                    "MiniMax rejected a configured key (%s, %d chars, ends %s): %s",
                     exc.response.status_code,
+                    len(key),
+                    key[-4:],
+                    exc.response.text[:200],
                 )
                 break
             answer = _answer_from_payload(response.json())
@@ -351,7 +354,7 @@ def minimax_text_candidates() -> list[str]:
             key = source()
         except Exception:
             key = None
-        if key and str(key) not in candidates:
+        if key and str(key).strip() and str(key) not in candidates:
             candidates.append(str(key))
     return candidates
 
@@ -398,7 +401,7 @@ def minimax_text_key() -> str | None:
     """Return a MiniMax text key that is known to answer, if there is one."""
     cached = _cached_minimax_key()
     if cached:
-        return cached
+        return cached.strip()
     candidates = minimax_text_candidates()
     return candidates[0] if candidates else None
 

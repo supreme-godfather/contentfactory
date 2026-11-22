@@ -1442,6 +1442,13 @@ class CreditSettingsRequest(BaseModel):
     series_cap: float | None = Field(default=None, ge=0, le=100000)
 
 
+class PackReelRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=240)
+    pack_id: str = Field(min_length=1, max_length=60)
+    template_id: str | None = Field(default=None, max_length=60)
+    platform: str = Field(default="instagram", pattern="^(youtube|instagram|both)$")
+
+
 @app.post("/api/admin/jobs/{job_id}/hook")
 def apply_hook_endpoint(
     job_id: str,
@@ -1460,6 +1467,27 @@ def apply_hook_endpoint(
         "content_version": job.content_version,
         "script": job.script_text,
     }
+
+
+@app.post("/api/pack-reels")
+def create_pack_reel_endpoint(
+    request: PackReelRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .series import create_pack_reel, series_state
+
+    try:
+        series, jobs = create_pack_reel(
+            request.topic,
+            request.pack_id,
+            template_id=request.template_id,
+            platform=request.platform,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state = series_state(series.id)
+    state["job_ids"] = [job.id for job in jobs]
+    return state
 
 
 @app.get("/api/series")

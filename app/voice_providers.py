@@ -1,4 +1,5 @@
 import binascii
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +19,8 @@ from .provider_credentials import (
 FISH_AUDIO_TTS_URL = "https://api.fish.audio/v1/tts"
 MINIMAX_TTS_URL = "https://api.minimax.io/v1/t2a_v2"
 FISH_AUDIO_ASR_URL = "https://api.fish.audio/v1/asr"
+
+logger = logging.getLogger(__name__)
 
 
 def _validated_text(text: str, *, maximum: int) -> str:
@@ -82,7 +85,11 @@ def generate_fish_audio_voiceover(text: str, destination: Path) -> None:
     _write_audio_atomically(destination, response.content)
 
 
-def generate_minimax_voiceover(text: str, destination: Path) -> None:
+def generate_minimax_voiceover(
+    text: str,
+    destination: Path,
+    voice_profile: dict[str, float] | None = None,
+) -> None:
     settings = get_settings()
     api_key = settings.minimax_api_key or get_provider_secret("minimax")
     voice_id = get_minimax_voice_id()
@@ -93,6 +100,16 @@ def generate_minimax_voiceover(text: str, destination: Path) -> None:
         raise RuntimeError("MiniMax speech requires a configured voice ID.")
     if model_id not in MINIMAX_SPEECH_MODELS:
         raise RuntimeError("MiniMax speech model configuration is invalid.")
+
+    profile = {"speed": 0.98, "vol": 1, "pitch": 0}
+    for key in ("speed", "vol", "pitch"):
+        value = (voice_profile or {}).get(key)
+        if isinstance(value, (int, float)):
+            profile[key] = float(value)
+    profile["speed"] = max(0.5, min(2.0, round(profile["speed"], 2)))
+    # MiniMax expects the volume and pitch as integers.
+    profile["vol"] = int(max(1, min(2, round(profile["vol"]))))
+    profile["pitch"] = int(max(-12, min(12, round(profile["pitch"]))))
 
     response = httpx.post(
         MINIMAX_TTS_URL,
@@ -109,9 +126,9 @@ def generate_minimax_voiceover(text: str, destination: Path) -> None:
             "output_format": "hex",
             "voice_setting": {
                 "voice_id": voice_id,
-                "speed": 0.98,
-                "vol": 1.0,
-                "pitch": 0,
+                "speed": profile["speed"],
+                "vol": profile["vol"],
+                "pitch": profile["pitch"],
             },
             "audio_setting": {
                 "sample_rate": 44100,
@@ -127,7 +144,17 @@ def generate_minimax_voiceover(text: str, destination: Path) -> None:
     payload = response.json()
     base_response = payload.get("base_resp") or {}
     if int(base_response.get("status_code") or 0) != 0:
-        raise RuntimeError("MiniMax speech generation was rejected by the provider.")
+        status_msg = str(base_response.get("status_msg") or "unknown error")
+        if profile != {"speed": 0.98, "vol": 1, "pitch": 0} and voice_profile:
+            # A tuned voice can be refused by the provider; the neutral voice is
+            # always acceptable, so the reel is still produced.
+            logger.warning(
+                "MiniMax refused the tuned voice profile (%s); retrying neutral",
+                status_msg,
+            )
+            generate_minimax_voiceover(text, destination)
+            return
+        raise RuntimeError(f"MiniMax speech generation was rejected: {status_msg}")
     encoded_audio = (payload.get("data") or {}).get("audio")
     if not isinstance(encoded_audio, str) or not encoded_audio:
         raise RuntimeError("MiniMax speech returned no audio.")

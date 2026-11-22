@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -19,6 +20,8 @@ from .storyboard import (
     caption_cues,
     estimate_duration_seconds,
 )
+
+logger = logging.getLogger(__name__)
 
 _RENDER_CLAIM_LOCK_ID = 0x48434652434C414D
 
@@ -731,6 +734,9 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
 
         custom_voiceover = get_custom_voiceover(metadata)
         character_reference = _series_character_reference(job_id, metadata, media_root)
+        from .packs import get_pack
+
+        pack = get_pack(str(metadata.get("pack_id") or "") or None)
         assets = create_job_assets(
             job_id,
             topic,
@@ -741,6 +747,7 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
             custom_voiceover=custom_voiceover or None,
             character_reference=character_reference,
             character_prompt=str(metadata.get("series_character") or "") or None,
+            voice_profile=pack.voice_profile or None,
         )
         from .audio_catalog import get_default_audio_asset
 

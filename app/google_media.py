@@ -195,7 +195,11 @@ def generate_huggingface_image(prompt: str, destination: Path) -> None:
 
 
 def generate_minimax_image(prompt: str, destination: Path) -> None:
-    """Generate one image with MiniMax image-01."""
+    """Generate one image with MiniMax image-01.
+
+    The image route lives on the v1 path while video generation uses the
+    configured base, so both are tried.
+    """
     settings = get_settings()
     api_key = settings.minimax_api_key or get_provider_secret("minimax")
     if not api_key:
@@ -203,33 +207,45 @@ def generate_minimax_image(prompt: str, destination: Path) -> None:
     base_url = settings.minimax_base_url.rstrip("/")
     if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._/-]*)?", base_url):
         raise RuntimeError("MINIMAX_BASE_URL must be an HTTPS API base URL.")
-    response = httpx.post(
-        f"{base_url}/image_generation",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": "image-01",
-            "prompt": prompt[:1500],
-            "aspect_ratio": "9:16",
-            "n": 1,
-        },
-        timeout=180,
-    )
-    if response.status_code >= 400:
-        detail = response.text[:800].replace(api_key, "[REDACTED]")
-        raise RuntimeError(
-            f"MiniMax image_generation returned HTTP {response.status_code}: {detail}"
+    root = re.sub(r"/v\d+$", "", base_url)
+    endpoints = [f"{root}/v1/image_generation"]
+    if f"{base_url}/image_generation" not in endpoints:
+        endpoints.append(f"{base_url}/image_generation")
+    last_error = ""
+    for endpoint in endpoints:
+        response = httpx.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "image-01",
+                "prompt": prompt[:1500],
+                "aspect_ratio": "9:16",
+                "n": 1,
+            },
+            timeout=180,
         )
-    urls = (response.json().get("data") or {}).get("image_urls") or []
-    if not urls:
-        raise RuntimeError("MiniMax returned success without an image URL.")
-    downloaded = httpx.get(str(urls[0]), timeout=180, follow_redirects=True)
-    downloaded.raise_for_status()
-    if not downloaded.content:
-        raise RuntimeError("MiniMax returned an empty image.")
-    destination.write_bytes(downloaded.content)
+        if response.status_code >= 400:
+            last_error = f"HTTP {response.status_code}: {response.text[:400]}"
+            continue
+        payload = response.json()
+        base_resp = payload.get("base_resp") or {}
+        if int(base_resp.get("status_code") or 0) != 0:
+            last_error = str(base_resp.get("status_msg") or "the provider rejected the request")
+            continue
+        urls = (payload.get("data") or {}).get("image_urls") or []
+        if not urls:
+            last_error = "the provider returned no image URL"
+            continue
+        downloaded = httpx.get(str(urls[0]), timeout=180, follow_redirects=True)
+        downloaded.raise_for_status()
+        if not downloaded.content:
+            raise RuntimeError("MiniMax returned an empty image.")
+        destination.write_bytes(downloaded.content)
+        return
+    raise RuntimeError(f"MiniMax image generation failed: {last_error}")
 
 
 def _image_data_url(path: Path) -> str:
@@ -309,8 +325,11 @@ def generate_minimax_video(
     task_id = submitted.json().get("task_id")
     if not task_id:
         raise RuntimeError("MiniMax did not return a task_id.")
+    logger.info("MiniMax video task %s submitted for %s", task_id, destination.name)
 
-    for attempt in range(60):
+    polls = 0
+    for attempt in range(40):
+        polls += 1
         polled = httpx.get(
             f"{base_url}/query/video_generation/{task_id}",
             headers=headers,
@@ -328,12 +347,20 @@ def generate_minimax_video(
             if not downloaded.content:
                 raise RuntimeError("MiniMax returned an empty video.")
             destination.write_bytes(downloaded.content)
+            logger.info(
+                "MiniMax video task %s finished after %s polls (%s)",
+                task_id,
+                polls,
+                destination.name,
+            )
             return
         if status in {"failed", "cancelled"}:
             error = task.get("error") or task.get("base_resp") or "unknown error"
             raise RuntimeError(f"MiniMax video task failed: {error}")
         time.sleep(10 if attempt < 30 else 15)
-    raise RuntimeError("MiniMax video task timed out while waiting for completion.")
+    raise RuntimeError(
+        f"MiniMax video task {task_id} did not finish in time ({polls} polls)."
+    )
 
 
 def generate_higgsfield_video(prompt: str, destination: Path) -> None:
@@ -406,6 +433,7 @@ def create_job_assets(
     custom_voiceover: str | None = None,
     character_reference: Path | None = None,
     character_prompt: str | None = None,
+    voice_profile: dict[str, float] | None = None,
 ) -> dict[str, str]:
     from .provider_credentials import (
         get_provider_for_role,
@@ -442,7 +470,7 @@ def create_job_assets(
             and Path(custom_voiceover).name == custom_voiceover
         ):
             assets["voiceover"] = owner_voice.name
-        elif _generate_role_asset("voice", job_id, topic, script, voiceover):
+        elif _generate_role_asset("voice", job_id, topic, script, voiceover, voice_profile=voice_profile):
             assets["voiceover"] = voiceover.name
             timing = voiceover.with_suffix(".timing.json")
             if timing.is_file():
@@ -479,15 +507,19 @@ def create_job_assets(
             from .cost import get_unit_prices, record_usage
 
             price = get_unit_prices()["minimax_video_per_second"]
-            for index in video_scenes:
+
+            def _make_minimax(index: int) -> tuple[str, str]:
                 video = media_root / f"{job_id}-scene-video-{index}.mp4"
-                generated.append(video)
                 generate_minimax_video(
                     scene_prompts[index - 1],
                     video,
                     first_frame=character_reference,
                 )
-                assets[f"scene_video_{index}"] = video.name
+                return f"scene_video_{index}", video.name
+
+            results = _parallel_map(_make_minimax, video_scenes)
+            for key, name in results:
+                assets[key] = name
                 record_usage(job_id, "minimax", "video", 5, "second", price)
         elif video_provider.startswith("higgsfield"):
             if no_paid_providers_enabled():
@@ -610,6 +642,21 @@ def create_job_assets(
                 prices.get(f"{image_provider}_image", 0.0) if image_provider != "minimax" else prices["minimax_image"],
             )
     return assets
+
+
+def _parallel_map(function, items, workers: int = 3) -> list:
+    """Run a small set of independent generation calls side by side.
+
+    Provider video generation takes minutes per clip, so the scenes of one reel
+    are produced concurrently instead of one after the other.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    items = list(items)
+    if len(items) <= 1:
+        return [function(item) for item in items]
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
+        return list(pool.map(function, items))
 
 
 def _generate_higgsfield_scenes(
@@ -788,6 +835,7 @@ def _generate_role_asset(
     script: str,
     destination: Path,
     prompt_override: str | None = None,
+    voice_profile: dict[str, float] | None = None,
 ) -> bool:
     from .provider_credentials import (
         is_provider_quota_error,
@@ -832,7 +880,7 @@ def _generate_role_asset(
             elif provider == "fish_audio" and role == "voice":
                 generate_fish_audio_voiceover(script, destination)
             elif provider == "minimax" and role == "voice":
-                generate_minimax_voiceover(script, destination)
+                generate_minimax_voiceover(script, destination, voice_profile)
             elif provider == "off":
                 return False
             else:

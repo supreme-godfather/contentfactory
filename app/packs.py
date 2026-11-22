@@ -41,6 +41,7 @@ class Pack:
     title_formula: str = ""
     hashtag_pool: tuple[str, ...] = ()
     voice_direction: str = ""
+    voice_profile: dict[str, float] = field(default_factory=dict)
     series_ready: bool = False
     default_parts: int = 1
     legacy_niche: str = ""
@@ -189,6 +190,7 @@ PACKS: dict[str, Pack] = {
         title_formula="A dramatic statement, no question mark, no clickbait.",
         hashtag_pool=("#SheruStyle", "#CinematicReels", "#HindiReels", "#AIArt", "#Reels"),
         voice_direction="Deep, calm, unhurried male Hindi voice with quiet confidence.",
+        voice_profile={"speed": 0.9, "pitch": -2, "vol": 1},
         series_ready=True,
         default_parts=6,
     ),
@@ -224,6 +226,7 @@ PACKS: dict[str, Pack] = {
         title_formula="The contrast itself as the title",
         hashtag_pool=("#DesiBoss", "#HindiReels", "#Attitude", "#Reels", "#Facts"),
         voice_direction="Street-smart Hindi male voice, confident and warm.",
+        voice_profile={"speed": 0.95, "pitch": -1, "vol": 1},
         series_ready=True,
         default_parts=6,
     ),
