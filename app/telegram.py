@@ -126,6 +126,7 @@ _pending_instagram_id: set[int] = set()
 _pending_schedule: dict[int, str] = {}
 _pending_series_topic: dict[int, str] = {}
 _pending_series_pack: dict[int, str] = {}
+_pending_credit_input: dict[int, str] = {}
 _unauthorized_notice_times: OrderedDict[int, float] = OrderedDict()
 _background_tasks: set[asyncio.Task[object]] = set()
 _voice_catalog_results: dict[str, list[dict[str, object]]] = {}
@@ -238,6 +239,7 @@ def _operations_keyboard() -> dict[str, list[list[dict[str, str]]]]:
     return {"inline_keyboard": [
         [_icon_button("system_health", "System health", "system_health"), _icon_button("pipeline_status", "Status", "status")],
         [_icon_button("review_queue", "Queue", "queue"), _icon_button("render_worker", "Render worker", "video_pipeline")],
+        [_button("💳 Higgsfield credits", "credits_panel"), _button("📚 Story series", "series_panel")],
         [toggle, _icon_button("automation", "Automation", "automation_panel")],
         [_icon_button("back", "Home", "menu")],
     ]}
@@ -2564,6 +2566,50 @@ def _series_card_keyboard(series_id: str) -> dict[str, list[list[dict[str, str]]
     return {"inline_keyboard": rows}
 
 
+def _build_credits_message() -> str:
+    from .credits import active_series_spend, credit_summary
+
+    try:
+        summary = credit_summary()
+    except Exception:
+        summary = {}
+    if not summary or not summary.get("starting_balance"):
+        return (
+            "💳 <b>Higgsfield credits</b>\n"
+            f"{_divider()}\n\n"
+            "  The credit pool is not set yet.\n\n"
+            "  Set the number of credits you have so the factory can budget a batch "
+            "of reels and stop before the pool runs out.\n\n"
+            "  Tap <b>Set credit balance</b> and send the number."
+        )
+    lines = [
+        "💳 <b>Higgsfield credits</b>",
+        _divider(),
+        "",
+        f"  Starting balance: <b>{summary['starting_balance']}</b> credits",
+        f"  Spent: <b>{summary['spent']}</b> credits (≈ ${float(summary['cost_usd']):.2f})",
+        f"  Remaining: <b>{summary['remaining']}</b> credits",
+        f"  Cap per series: <b>{summary['series_cap']}</b> credits",
+    ]
+    spend = active_series_spend()
+    if spend:
+        lines += ["", "  <b>Per series</b>"]
+        for item in spend:
+            lines.append(
+                f"  📖 {html.escape(str(item['topic'])[:34])} — "
+                f"{item['credits']}/{item['cap']} credits ({item['status']})"
+            )
+    return "\n".join(lines)
+
+
+def _credits_keyboard() -> dict[str, list[list[dict[str, str]]]]:
+    return {"inline_keyboard": [
+        [_button("💳 Set credit balance", "credits_set_balance")],
+        [_button("🎯 Set per-series cap", "credits_set_cap")],
+        [_button("🔙 Back", "nav:ops")],
+    ]}
+
+
 def _build_pack_panel() -> str:
     from .hq import get_active_pack_id
     from .packs import PACKS
@@ -3597,6 +3643,25 @@ async def handle_update(update: dict[str, Any]) -> None:
 
             elif data == "pack_panel":
                 await send_message(chat_id, _build_pack_panel(), _pack_keyboard())
+
+            elif data == "credits_panel":
+                await send_message(chat_id, _build_credits_message(), _credits_keyboard())
+
+            elif data in {"credits_set_balance", "credits_set_cap"}:
+                _pending_credit_input[chat_id] = (
+                    "balance" if data == "credits_set_balance" else "cap"
+                )
+                await send_message(
+                    chat_id,
+                    (
+                        "💳 <b>Set the number of credits</b>\n\n"
+                        "  Send the number of Higgsfield credits you have"
+                        if data == "credits_set_balance"
+                        else "💳 <b>Set the per-series cap</b>\n\n"
+                        "  Send how many credits one story series may use"
+                    ),
+                    _back_keyboard(),
+                )
 
             elif data.startswith("pack_set:"):
                 from .hq import set_active_pack
@@ -5116,6 +5181,32 @@ async def handle_update(update: dict[str, Any]) -> None:
 
         # ── Text command handling ───────────────────────────────────
         text = (message.get("text") or "").strip()
+
+        if chat_id in _pending_credit_input:
+            kind = _pending_credit_input.pop(chat_id, None)
+            if kind:
+                from .credits import set_series_cap, set_starting_balance
+
+                digits = "".join(char for char in text if char.isdigit())
+                if not digits:
+                    await send_message(chat_id, "⚠️ Send a number of credits.", _credits_keyboard())
+                    return
+                value = int(digits)
+                if kind == "balance":
+                    set_starting_balance(value)
+                    await send_message(
+                        chat_id,
+                        f"💳 Credit balance set to <b>{value}</b> credits.",
+                        _credits_keyboard(),
+                    )
+                else:
+                    set_series_cap(value)
+                    await send_message(
+                        chat_id,
+                        f"🎯 Per-series cap set to <b>{value}</b> credits.",
+                        _credits_keyboard(),
+                    )
+                return
 
         if chat_id in _pending_series_topic:
             if text == "/cancel":

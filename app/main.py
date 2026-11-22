@@ -1437,6 +1437,11 @@ class SeriesStatusRequest(BaseModel):
     )
 
 
+class CreditSettingsRequest(BaseModel):
+    starting_balance: int | None = Field(default=None, ge=0, le=1000000)
+    series_cap: int | None = Field(default=None, ge=0, le=100000)
+
+
 @app.post("/api/admin/jobs/{job_id}/hook")
 def apply_hook_endpoint(
     job_id: str,
@@ -1543,6 +1548,46 @@ def list_packs(_: None = Depends(require_admin_api_token)) -> list[dict[str, obj
             "hook_types": list(pack.hook_types),
         }
         for pack in PACKS.values()
+    ]
+
+
+@app.get("/api/credits")
+def credit_summary_endpoint(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
+    from .credits import active_series_spend, credit_summary
+
+    summary = credit_summary()
+    summary["series"] = active_series_spend()
+    return summary
+
+
+@app.post("/api/credits")
+def credit_settings_endpoint(
+    request: CreditSettingsRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .credits import credit_summary, set_series_cap, set_starting_balance
+
+    if request.starting_balance is not None:
+        set_starting_balance(request.starting_balance)
+    if request.series_cap is not None:
+        set_series_cap(request.series_cap)
+    return credit_summary()
+
+
+@app.get("/api/scene-templates")
+def scene_templates_endpoint(_: None = Depends(require_admin_api_token)) -> list[dict[str, object]]:
+    from .scene_templates import TEMPLATES
+
+    return [
+        {
+            "template_id": template.template_id,
+            "label": template.label,
+            "summary": template.summary,
+            "location": template.location,
+            "beats": list(template.beats),
+            "credit_cost": template.credit_cost,
+        }
+        for template in TEMPLATES
     ]
 
 

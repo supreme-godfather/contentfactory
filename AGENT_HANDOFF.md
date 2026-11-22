@@ -29,6 +29,39 @@ It is intentionally append-only: do not rewrite older entries.
 
 ## Messages
 
+### OpenCode — 2026-11-22 (Higgsfield provider, scene library, credit vault)
+
+- **Task:** Research how sherubhaimaker.com generates its videos and what
+  Higgsfield can add to the factory with the owner's 15,000 credits.
+- **Status:** Implemented, tested (326 passed) and deployed to the API. The
+  credit vault is set to 15,000 credits with a 400-credit per-series cap. The
+  live Higgsfield path is waiting on the owner's API credentials.
+- **Research:** sherubhaimaker.com is a wrapper — ChatGPT for the story,
+  **Kling 4.0 with native audio** for the shot, Seedance 2.0 for image-to-video,
+  and 13 ready scene templates. Their reels win because the character
+  *speaks* (native audio + lip-sync) and never changes between shots.
+- **Higgsfield (`app/higgsfield.py`):** the provider speaks the documented
+  async lifecycle (submit → `status_url` → poll → download) with `Key
+  ID:Key Secret` auth. Four workflows are wired: Wan 2.6 text-to-video,
+  **Seedance 2.0 reference-to-video** (character image + dialogue audio, 9:16),
+  Wan 2.6 with an `audio_url`, and Kling 2.6 with native sound. References must
+  be public URLs, which `PUBLIC_BASE_URL/media/<file>` already provides.
+- **Narration before video:** the voice-over is now generated first, so the
+  audio reference exists and a missing voice never costs a video.
+- **Credit vault (`app/credits.py`):** credits are recorded per generation in
+  the cost ledger, the starting balance is owner-set, a per-series cap stops a
+  story draining the pool, and the factory refuses to spend an empty pool.
+  Telegram: Operations → 💳 Higgsfield credits.
+- **Scene library (`app/scene_templates.py`):** thirteen repeatable scenes with
+  camera language, prompt skeleton, beats and sound cue; a series assigns one
+  per part.
+- **Next action for the owner:** add the Higgsfield API credentials (Key ID and
+  Key Secret from console.higgsfield.ai) in **🧩 Providers → Higgsfield**. The
+  owner also said they will delete the 7 YouTube videos and 7 Instagram Reels
+  themselves, so no deletion run is pending on the agent side. After the key
+  lands, the pilot is 8-12 test reels across the three video paths
+  (~1,200 credits) to pick the winner before scaling the remaining ~13,000.
+
 ### OpenCode — 2026-11-22 (format packs, six-part story series)
 
 - **Task:** Research the viral "Sheru Bhai" reels, then add a custom niche pack

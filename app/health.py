@@ -160,6 +160,16 @@ def _provider_status() -> dict[str, object]:
     }
 
 
+def _credit_summary_safe() -> dict[str, object]:
+    """The Higgsfield credit vault, if the module is available."""
+    try:
+        from .credits import credit_summary
+
+        return credit_summary()
+    except Exception:
+        return {}
+
+
 def _series_summary() -> dict[str, object]:
     """Story series state: how many are running and what they have spent."""
     try:
@@ -271,6 +281,7 @@ def pipeline_health() -> dict[str, object]:
         },
         "media_qc": qc,
         "series": _series_summary(),
+        "credits": _credit_summary_safe(),
         "recent_failures": _recent_failures(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

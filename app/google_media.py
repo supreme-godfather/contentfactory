@@ -422,12 +422,51 @@ def create_job_assets(
     image_provider = get_provider_for_role("image")
     video_provider = get_provider_for_role("video")
     scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
+    template = _scene_template_from_storyboard(storyboard or [])
+    if template:
+        scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [], template)
     if character_prompt:
         scene_prompts = [
             f"{prompt}. {character_prompt[:600]}" for prompt in scene_prompts
         ]
     generated: list[Path] = []
     try:
+        # The narration is produced first: the Higgsfield reference workflows
+        # need the dialogue audio, and a missing voice must not cost a video.
+        voiceover = media_root / f"{job_id}-voiceover.mp3"
+        voiceover.with_suffix(".timing.json").unlink(missing_ok=True)
+        owner_voice = media_root / custom_voiceover if custom_voiceover else None
+        if (
+            owner_voice is not None
+            and owner_voice.is_file()
+            and Path(custom_voiceover).name == custom_voiceover
+        ):
+            assets["voiceover"] = owner_voice.name
+        elif _generate_role_asset("voice", job_id, topic, script, voiceover):
+            assets["voiceover"] = voiceover.name
+            timing = voiceover.with_suffix(".timing.json")
+            if timing.is_file():
+                assets["voice_timing"] = timing.name
+            from .cost import get_unit_prices, record_usage
+
+            voice_provider = get_provider_for_role("voice")
+            prices = get_unit_prices()
+            voice_price = {
+                "minimax": prices["minimax_speech_per_1k_chars"],
+                "elevenlabs": prices["elevenlabs_per_1k_chars"],
+                "fish_audio": prices["fish_tts_per_1k_chars"],
+                "google": prices["google_speech_per_1k_chars"],
+                "openai": prices["openai_speech_per_1k_chars"],
+            }.get(voice_provider, 0.0)
+            record_usage(
+                job_id,
+                voice_provider,
+                "speech",
+                max(0, len(script)) / 1000,
+                "1k_chars",
+                voice_price,
+            )
+
         # Expensive provider video is reserved for the hook and the payoff beat.
         video_scenes = (1, 5) if len(scene_prompts) >= 5 else (1,)
         if video_provider == "minimax":
@@ -450,7 +489,7 @@ def create_job_assets(
                 )
                 assets[f"scene_video_{index}"] = video.name
                 record_usage(job_id, "minimax", "video", 5, "second", price)
-        elif video_provider == "higgsfield":
+        elif video_provider.startswith("higgsfield"):
             if no_paid_providers_enabled():
                 raise RuntimeError(
                     "Higgsfield video generation is blocked while no-paid mode is ON."
@@ -459,13 +498,20 @@ def create_job_assets(
                 raise RuntimeError("Higgsfield video generation requires a configured API key.")
             from .cost import get_unit_prices, record_usage
 
-            price = get_unit_prices()["higgsfield_video_per_second"]
-            for index in video_scenes:
-                video = media_root / f"{job_id}-scene-video-{index}.mp4"
-                generated.append(video)
-                generate_higgsfield_video(scene_prompts[index - 1], video)
-                assets[f"scene_video_{index}"] = video.name
-                record_usage(job_id, "higgsfield", "video", 5, "second", price)
+            credit_price = get_unit_prices()["higgsfield_credit"]
+            _generate_higgsfield_scenes(
+                job_id,
+                video_provider,
+                scene_prompts,
+                video_scenes,
+                media_root,
+                assets,
+                generated,
+                character_reference,
+                assets.get("voiceover"),
+                record_usage,
+                credit_price,
+            )
 
         if image_provider != "off":
             from .cost import get_unit_prices, record_usage
@@ -543,39 +589,6 @@ def create_job_assets(
             shutil.copyfile(character_reference, image)
             assets[f"scene_{index}"] = image.name
 
-    voiceover = media_root / f"{job_id}-voiceover.mp3"
-    voiceover.with_suffix(".timing.json").unlink(missing_ok=True)
-    owner_voice = media_root / custom_voiceover if custom_voiceover else None
-    if (
-        owner_voice is not None
-        and owner_voice.is_file()
-        and Path(custom_voiceover).name == custom_voiceover
-    ):
-        assets["voiceover"] = owner_voice.name
-    elif _generate_role_asset("voice", job_id, topic, script, voiceover):
-        assets["voiceover"] = voiceover.name
-        timing = voiceover.with_suffix(".timing.json")
-        if timing.is_file():
-            assets["voice_timing"] = timing.name
-        from .cost import get_unit_prices, record_usage
-
-        voice_provider = get_provider_for_role("voice")
-        prices = get_unit_prices()
-        voice_price = {
-            "minimax": prices["minimax_speech_per_1k_chars"],
-            "elevenlabs": prices["elevenlabs_per_1k_chars"],
-            "fish_audio": prices["fish_tts_per_1k_chars"],
-            "google": prices["google_speech_per_1k_chars"],
-            "openai": prices["openai_speech_per_1k_chars"],
-        }.get(voice_provider, 0.0)
-        record_usage(
-            job_id,
-            voice_provider,
-            "speech",
-            max(0, len(script)) / 1000,
-            "1k_chars",
-            voice_price,
-        )
     if thumbnail_prompt:
         thumbnail = media_root / f"{job_id}-thumbnail.png"
         if _generate_role_asset(
@@ -601,10 +614,113 @@ def create_job_assets(
     return assets
 
 
+def _generate_higgsfield_scenes(
+    job_id: str,
+    video_provider: str,
+    scene_prompts: list[str],
+    video_scenes: tuple[int, ...],
+    media_root: Path,
+    assets: dict[str, str],
+    generated: list[Path],
+    character_reference: Path | None,
+    voiceover_name: str | None,
+    record_usage,
+    credit_price: float,
+) -> None:
+    """Generate the video scenes through Higgsfield and record the credits.
+
+    Four workflows are supported:
+
+    - ``higgsfield`` — Wan 2.6 text-to-video (no reference).
+    - ``higgsfield_seedance`` — Seedance 2.0 with the character image and the
+      dialogue audio as references: the character speaks the line.
+    - ``higgsfield_wan_audio`` — Wan 2.6 with the dialogue audio as reference.
+    - ``higgsfield_kling`` — Kling 2.6 with native sound, no voice-over needed.
+    """
+    from . import higgsfield
+
+    character_url = None
+    if character_reference is not None and character_reference.is_file():
+        character_url = higgsfield.public_media_url(character_reference.name)
+    voice_url = None
+    if voiceover_name:
+        voice_url = higgsfield.public_media_url(voiceover_name)
+
+    for index in video_scenes:
+        if index > len(scene_prompts):
+            continue
+        prompt = scene_prompts[index - 1]
+        video = media_root / f"{job_id}-scene-video-{index}.mp4"
+        generated.append(video)
+        if video_provider == "higgsfield_seedance":
+            if not character_url:
+                raise RuntimeError(
+                    "The Seedance workflow needs a public character image reference."
+                )
+            credits = higgsfield.seedance_reference_video(
+                prompt,
+                video,
+                image_urls=[character_url],
+                audio_urls=[voice_url] if voice_url else None,
+                duration=5,
+                resolution="720p",
+                aspect_ratio="9:16",
+            )
+        elif video_provider == "higgsfield_wan_audio":
+            if not voice_url:
+                raise RuntimeError(
+                    "The Wan audio workflow needs a public dialogue audio reference."
+                )
+            credits = higgsfield.wan_video(
+                prompt,
+                video,
+                audio_url=voice_url,
+                duration=5,
+                resolution="720p",
+            )
+        elif video_provider == "higgsfield_kling":
+            credits = higgsfield.kling_video(
+                prompt,
+                video,
+                image_url=character_url,
+                duration=5,
+                resolution="720p",
+                generate_audio=True,
+            )
+        else:
+            credits = higgsfield.wan_video(
+                prompt,
+                video,
+                duration=5,
+                resolution="720p",
+            )
+        assets[f"scene_video_{index}"] = video.name
+        record_usage(job_id, "higgsfield", "credit", credits, "credit", credit_price)
+
+
+def _scene_template_from_storyboard(storyboard: list[dict[str, object]]) -> dict[str, str] | None:
+    """The scene template attached to a job, if it has one."""
+    from .scene_templates import template_for
+
+    for scene in storyboard:
+        template_id = scene.get("scene_template")
+        if isinstance(template_id, str) and template_id:
+            template = template_for(template_id)
+            if template is not None:
+                return {
+                    "prompt": template.prompt,
+                    "camera": template.camera,
+                    "sound": template.sound,
+                    "location": template.location,
+                }
+    return None
+
+
 def _huggingface_scene_prompts(
     topic: str,
     script: str,
     storyboard: list[dict[str, object]],
+    template: dict[str, str] | None = None,
 ) -> list[str]:
     scenes = storyboard or [
         {"stage": f"scene {index}", "visual_direction": ""}
@@ -621,6 +737,16 @@ def _huggingface_scene_prompts(
     for index, scene in enumerate(scenes):
         direction = str(scene.get("visual_direction") or "").strip()
         narration = paragraphs[index] if index < len(paragraphs) else script.strip()
+        if template and template.get("prompt"):
+            prompts.append(
+                f"{template['prompt']}. "
+                f"Camera: {template.get('camera', '')}. "
+                f"Sound: {template.get('sound', '')}. "
+                f"Spoken line: {narration[:300]}. "
+                "One continuous shot, photorealistic cinematic film, no text, no "
+                "watermark, no logo, vertical 9:16, leave the lower fifth clear."
+            )
+            continue
         prompts.append(
             f"Create one original 9:16 vertical cinematic documentary frame about {topic}. "
             f"Scene beat: {scene.get('stage', f'scene {index + 1}')}. "

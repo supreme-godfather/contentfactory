@@ -14,6 +14,7 @@ from .db import ContentJob, FactorySetting, ProviderUsage, SessionLocal
 
 DEFAULT_UNIT_PRICES: dict[str, float] = {
     "minimax_video_per_second": 0.06,
+    "higgsfield_credit": 0.0143,
     "minimax_image": 0.022,
     "minimax_llm_per_1k_tokens": 0.0006,
     "minimax_speech_per_1k_chars": 0.06,

@@ -474,6 +474,51 @@ reasoning, retries with a larger budget when the model only thought, and the
 metadata, hook, script and research passes use budgets that leave room for the
 answer.
 
+## Higgsfield: speaking characters and the credit vault (2026-11-22)
+
+Higgsfield is a front door to the best video models (Kling, Seedance, Wan, SOUL)
+through one asynchronous API, and it bills in **credits**. The factory now
+treats it as a first-class provider.
+
+### What was added
+
+- **`app/higgsfield.py`** — the provider: `Key ID:Key Secret` auth, the
+  submit → poll → download lifecycle, idempotency keys, and four workflows:
+
+  | Video role | Endpoint | What it does |
+  |---|---|---|
+  | `higgsfield` | Wan 2.6 text-to-video | prompt only |
+  | `higgsfield_seedance` | Seedance 2.0 reference-to-video | **character image + dialogue audio** → the character speaks the line |
+  | `higgsfield_wan_audio` | Wan 2.6 text-to-video with `audio_url` | the dialogue audio drives the shot |
+  | `higgsfield_kling` | Kling 2.6 image-to-video | native sound, no voice-over |
+
+  References must be public URLs; the engine already serves every media file
+  from `PUBLIC_BASE_URL/media/<file>`, so the character sheet and the
+  narration are handed to the model directly.
+- **Narration first** — the voice-over is produced before the video scenes, so
+  a missing voice never costs a video and the audio reference is ready.
+- **`app/credits.py` — the credit vault.** Every Higgsfield generation is
+  written to the cost ledger in credits as well as dollars. The owner sets the
+  starting balance, the engine tracks the spend per job and per series, a cap
+  stops one series from draining the pool, and the factory refuses to spend
+  when the pool is empty. Telegram: **Operations → 💳 Higgsfield credits**.
+  API: `GET /api/credits`, `POST /api/credits`.
+- **`app/scene_templates.py` — the scene library.** Thirteen repeatable scenes
+  (boss entry, convoy, auction, palace gate, private jet chai, helipad,
+  golden throne, rain walk, cutting chai, school for my son, back to the
+  village, police station silence, royal baraat entry), each with camera
+  language, prompt skeleton, beats and sound cue. A series assigns one
+  template per part, so six parts do not look like the same scene six times.
+  API: `GET /api/scene-templates`.
+
+### Credit budget
+
+Higgsfield's own figures: a 60-second reel costs about 240 credits as six
+Kling shots, or 960 at Seedance 2.5 1080p. A 15,000-credit pool is therefore
+roughly 60–150 finished reels, or a 1,200-credit pilot that leaves ~13,800 to
+scale the winning format. The per-series cap (default 400) and the vault
+panel keep the spend visible.
+
 ## Media quality control, preflight and health (2026-11-22)
 
 The engine now measures what it renders and refuses to publish media it has

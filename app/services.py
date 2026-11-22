@@ -438,6 +438,10 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
         script = str(package.get("script") or "")
         package_metadata = package.get("metadata") or {}
         storyboard = build_storyboard(topic, script)
+        scene_template = str(series_context.get("scene_template") or "")
+        if scene_template:
+            for scene in storyboard:
+                scene["scene_template"] = scene_template
         cues = caption_cues(script)
         estimated_seconds = estimate_duration_seconds(script)
         if not cues or any(
@@ -592,6 +596,7 @@ def _series_context_for_job(job_id: str) -> dict[str, object]:
             "pack_id",
             "pack_label",
             "series_caption",
+            "scene_template",
         }
     }
     if previous_recap:
@@ -714,6 +719,13 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
         from .cost import enforce_series_budget
 
         enforce_series_budget(str(metadata["series_id"]))
+        from .credits import enforce_series_credit_budget
+
+        enforce_series_credit_budget(str(metadata["series_id"]))
+    if str(metadata.get("video_provider") or "").startswith("higgsfield"):
+        from .credits import enforce_credit_balance
+
+        enforce_credit_balance()
     try:
         from .job_inputs import get_custom_voiceover
 

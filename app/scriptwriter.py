@@ -444,7 +444,14 @@ def _series_prompt_block(series_context: dict | None) -> str:
     recap = str(series_context.get("previous_recap") or "").strip()
     cliffhanger = str(series_context.get("cliffhanger") or "").strip()
     character = str(series_context.get("series_character") or "").strip()
+    template_id = str(series_context.get("scene_template") or "").strip()
     lines: list[str] = []
+    if template_id:
+        from .scene_templates import template_directive, template_for
+
+        template = template_for(template_id)
+        if template is not None:
+            lines.append(template_directive(template))
     if title:
         lines.append(f"Story part title: {title}")
     if part_count:

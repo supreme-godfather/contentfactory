@@ -192,7 +192,8 @@ def test_higgsfield_provider_is_wired_for_video(monkeypatch):
     set_provider_for_role("video", "higgsfield")
 
     assert PROVIDER_INFO["higgsfield"]["wired"] is True
-    assert PROVIDER_ROLES["video"]["higgsfield"] == "Higgsfield Wan 2.6 text-to-video"
+    assert PROVIDER_ROLES["video"]["higgsfield"] == "Higgsfield · Wan 2.6 (text only)"
+    assert "higgsfield_seedance" in PROVIDER_ROLES["video"]
     assert no_paid_providers_enabled() is True
 
 

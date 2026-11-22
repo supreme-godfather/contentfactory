@@ -126,7 +126,10 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
     },
     "video": {
         "minimax": "MiniMax H3 text-to-video",
-        "higgsfield": "Higgsfield Wan 2.6 text-to-video",
+        "higgsfield": "Higgsfield · Wan 2.6 (text only)",
+        "higgsfield_seedance": "Higgsfield · Seedance 2.0 (character + dialogue)",
+        "higgsfield_wan_audio": "Higgsfield · Wan 2.6 (dialogue audio)",
+        "higgsfield_kling": "Higgsfield · Kling 2.6 (native sound)",
         "off": "No AI video",
     },
 }
@@ -365,11 +368,11 @@ def provider_candidates_for_role(role: str) -> list[str]:
         if provider_cooldown_until(primary) is not None:
             return []
         return [primary]
-    if primary == "higgsfield":
+    if primary == "higgsfield" or primary.startswith("higgsfield_"):
         status = provider_status()
         if not status.get("higgsfield"):
             return []
-        if provider_cooldown_until(primary) is not None:
+        if provider_cooldown_until("higgsfield") is not None:
             return []
         return [primary]
     if primary not in {"google", "openai"}:

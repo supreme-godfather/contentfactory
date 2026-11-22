@@ -45,6 +45,7 @@ class PartPlan:
     beats: tuple[str, ...]
     cliffhanger: str
     teaser: str
+    template_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,21 @@ class SeriesPlan:
     character: str
     setting: str
     parts: tuple[PartPlan, ...]
+
+
+def _assign_templates(
+    parts: list[PartPlan], topic: str, pack_id: str
+) -> list[PartPlan]:
+    """Give every part one of the repeatable scene templates."""
+    from dataclasses import replace
+
+    from .scene_templates import plan_scene_templates
+
+    templates = plan_scene_templates(topic, pack_id, len(parts))
+    return [
+        replace(part, template_id=templates[index].template_id if index < len(templates) else "")
+        for index, part in enumerate(parts)
+    ]
 
 
 def _fallback_plan(topic: str, pack: Pack, part_count: int) -> SeriesPlan:
@@ -86,7 +102,7 @@ def _fallback_plan(topic: str, pack: Pack, part_count: int) -> SeriesPlan:
         logline=f"{topic} — {part_count} भागों में एक कहानी।",
         character="एक शांत, आत्मविश्वासी किरदार जो हर मोड़ पर पहला है।",
         setting="आधी रात का शहर, गरम चाय का ठेला, महँगी चमक।",
-        parts=tuple(parts),
+        parts=tuple(_assign_templates(parts, topic, pack.pack_id)),
     )
 
 
@@ -170,7 +186,7 @@ def plan_series(topic: str, pack: Pack, part_count: int = DEFAULT_PART_COUNT) ->
         logline=" ".join(str(payload.get("logline") or "").split())[:400],
         character=" ".join(str(payload.get("character") or "").split())[:400],
         setting=" ".join(str(payload.get("setting") or "").split())[:400],
-        parts=tuple(parts),
+        parts=tuple(_assign_templates(parts, topic, pack.pack_id)),
     )
 
 
@@ -190,6 +206,7 @@ def _series_metadata(series: ContentSeries, plan: SeriesPlan, part: PartPlan) ->
         "pack_id": pack.pack_id,
         "pack_label": pack.label,
         "series_caption": f"भाग {part.index}/{series.part_count}",
+        "scene_template": part.template_id,
     }
 
 
@@ -238,6 +255,7 @@ def create_series(
                             "beats": list(part.beats),
                             "cliffhanger": part.cliffhanger,
                             "teaser": part.teaser,
+                            "template_id": part.template_id,
                         }
                         for part in plan.parts
                     ],
