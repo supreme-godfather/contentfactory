@@ -913,14 +913,35 @@ class TestMessageBuilders:
         )
 
         set_provider_for_role("script", "openai")
-        set_provider_for_role("image", "google")
+        set_provider_for_role("image", "minimax")
         set_provider_for_role("voice", "off")
 
         assert get_provider_for_role("script") == "openai"
-        assert get_provider_for_role("image") == "google"
+        assert get_provider_for_role("image") == "minimax"
         assert get_provider_for_role("voice") == "off"
 
-    def test_no_paid_mode_blocks_paid_media_and_allows_edge_tts(self):
+    def test_only_paid_providers_are_offered(self):
+        from app.provider_credentials import PROVIDER_ROLES
+
+        assert "google" not in PROVIDER_ROLES["image"]
+        assert "huggingface" not in PROVIDER_ROLES["image"]
+        assert "edge_tts" not in PROVIDER_ROLES["voice"]
+        assert "google" not in PROVIDER_ROLES["voice"]
+        assert "minimax" in PROVIDER_ROLES["image"]
+        assert "minimax" in PROVIDER_ROLES["voice"]
+
+    def test_a_free_route_falls_back_to_the_paid_default(self):
+        from app.provider_credentials import (
+            get_provider_for_role,
+            set_provider_for_role,
+        )
+
+        set_provider_for_role("image", "minimax")
+        set_provider_for_role("voice", "minimax")
+        assert get_provider_for_role("image") == "minimax"
+        assert get_provider_for_role("voice") == "minimax"
+
+    def test_no_paid_mode_blocks_paid_media(self):
         from app.provider_credentials import (
             no_paid_providers_enabled,
             provider_candidates_for_role,
@@ -930,12 +951,10 @@ class TestMessageBuilders:
         )
 
         assert no_paid_providers_enabled()
-        set_provider_for_role("voice", "google")
+        set_provider_for_role("voice", "minimax")
         assert provider_candidates_for_role("voice") == []
         assert provider_candidates_for_role("image") == ["off"]
 
-        set_provider_for_role("voice", "edge_tts")
-        assert provider_candidates_for_role("voice") == ["edge_tts"]
         set_provider_for_role("voice", "elevenlabs")
         set_elevenlabs_voice_id("voice_123")
         assert provider_candidates_for_role("voice") == []
@@ -1001,10 +1020,14 @@ class TestMessageBuilders:
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
             patch(
-                "app.provider_credentials.provider_candidates_for_role",
-                side_effect=lambda role: {"image": ["google"], "voice": ["openai"]}[role],
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {"image": "minimax", "voice": "openai", "video": "off"}[role],
             ),
-            patch("app.google_media.generate_image") as mock_image,
+            patch(
+                "app.provider_credentials.provider_candidates_for_role",
+                side_effect=lambda role: {"image": ["minimax"], "voice": ["openai"]}[role],
+            ),
+            patch("app.google_media.generate_minimax_image") as mock_image,
             patch(
                 "app.google_media._create_openai_assets",
                 return_value={"voiceover": "job-voiceover.mp3"},
@@ -1190,33 +1213,41 @@ class TestMessageBuilders:
             with pytest.raises(RuntimeError, match="blocked while no-paid mode is ON"):
                 create_job_assets("job", "topic", "script", tmp_path)
 
-    def test_edge_tts_can_generate_voice_without_paid_provider(self, tmp_path):
+    def test_the_paid_voice_is_used_when_no_free_route_exists(self, tmp_path):
         from app.google_media import create_job_assets
 
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
             patch(
-                "app.provider_credentials.provider_candidates_for_role",
-                side_effect=lambda role: ["edge_tts"] if role == "voice" else ["off"],
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {"voice": "minimax", "image": "off", "video": "off"}[role],
             ),
-            patch("app.google_media.generate_edge_tts_voiceover") as mock_edge_tts,
+            patch(
+                "app.provider_credentials.provider_candidates_for_role",
+                side_effect=lambda role: ["minimax"] if role == "voice" else ["off"],
+            ),
+            patch("app.google_media.generate_minimax_voiceover") as mock_voice,
         ):
             assets = create_job_assets("job", "topic", "script", tmp_path)
 
         assert assets == {"voiceover": "job-voiceover.mp3"}
-        mock_edge_tts.assert_called_once()
+        mock_voice.assert_called_once()
 
-    def test_selected_edge_tts_failure_does_not_silently_drop_narration(self, tmp_path):
+    def test_selected_voice_failure_does_not_silently_drop_narration(self, tmp_path):
         from app.google_media import create_job_assets
 
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
             patch(
-                "app.provider_credentials.provider_candidates_for_role",
-                side_effect=lambda role: ["edge_tts"] if role == "voice" else ["off"],
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {"voice": "minimax", "image": "off", "video": "off"}[role],
             ),
             patch(
-                "app.google_media.generate_edge_tts_voiceover",
+                "app.provider_credentials.provider_candidates_for_role",
+                side_effect=lambda role: ["minimax"] if role == "voice" else ["off"],
+            ),
+            patch(
+                "app.google_media.generate_minimax_voiceover",
                 side_effect=RuntimeError("TTS unavailable"),
             ),
         ):
@@ -1369,13 +1400,17 @@ class TestMessageBuilders:
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
             patch(
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {"image": "minimax", "voice": "off", "video": "off"}[role],
+            ),
+            patch(
                 "app.provider_credentials.provider_candidates_for_role",
                 side_effect=lambda role: {
-                    "image": ["google", "openai"],
+                    "image": ["minimax", "openai"],
                     "voice": ["off"],
                 }[role],
             ),
-            patch("app.google_media.generate_image", side_effect=quota_error),
+            patch("app.google_media.generate_minimax_image", side_effect=quota_error),
             patch("app.provider_credentials.mark_provider_quota_error") as mock_cooldown,
             patch(
                 "app.google_media._create_openai_assets",
@@ -1388,7 +1423,7 @@ class TestMessageBuilders:
             f"scene_{index}": f"job-scene-{index}.png" for index in range(1, 7)
         }
         assert mock_cooldown.call_count == 6
-        assert mock_cooldown.call_args.args == ("google", quota_error)
+        assert mock_cooldown.call_args.args == ("minimax", quota_error)
         assert mock_openai.call_count == 6
         assert mock_openai.call_args.args == (
             "job",
@@ -1416,13 +1451,17 @@ class TestMessageBuilders:
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
             patch(
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {"image": "minimax", "voice": "off", "video": "off"}[role],
+            ),
+            patch(
                 "app.provider_credentials.provider_candidates_for_role",
                 side_effect=lambda role: {
-                    "image": ["google", "openai"],
+                    "image": ["minimax", "openai"],
                     "voice": ["off"],
                 }[role],
             ),
-            patch("app.google_media.generate_image", side_effect=permission_error),
+            patch("app.google_media.generate_minimax_image", side_effect=permission_error),
             patch("app.provider_credentials.mark_provider_quota_error") as mock_cooldown,
             pytest.raises(httpx.HTTPStatusError),
         ):

@@ -103,24 +103,18 @@ SUPPORTED_PROVIDERS = tuple(PROVIDER_INFO.keys())
 PROVIDER_ROLES: dict[str, dict[str, str]] = {
     "script": {
         "template": "Built-in Hindi script",
-        "gemini": "Gemini 3.5 Flash-Lite (AI Studio)",
         "minimax": "MiniMax M Plan text/research",
-        "huggingface": "Hugging Face Inference Providers",
         "openai": "OpenAI GPT-4o mini",
     },
     "image": {
-        "google": "Google Imagen",
+        "minimax": "MiniMax image-01 (character reference capable)",
         "openai": "OpenAI Images",
-        "huggingface": "FLUX.1 Schnell (Hugging Face GPU endpoint)",
-        "minimax": "MiniMax image-01",
         "off": "No AI image",
     },
     "voice": {
-        "google": "Google Text-to-Speech",
-        "edge_tts": "Microsoft Edge TTS (online)",
+        "minimax": "MiniMax Speech 2.8",
         "elevenlabs": "ElevenLabs (credit-based)",
         "fish_audio": "Fish Audio S2.1 Pro",
-        "minimax": "MiniMax Speech 2.8",
         "openai": "OpenAI Text-to-Speech",
         "off": "No AI narration",
     },
@@ -132,6 +126,16 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
         "higgsfield_kling": "Higgsfield · Kling 2.6 (native sound)",
         "off": "No AI video",
     },
+}
+
+# The free and unconfigured routes are set aside on purpose: every generation
+# step runs on a paid provider (MiniMax or Higgsfield) so a reel never quietly
+# falls back to a free tool that produces different quality.
+PAID_ONLY_ROLES: dict[str, str] = {
+    "script": "minimax",
+    "image": "minimax",
+    "voice": "minimax",
+    "video": "minimax",
 }
 
 
@@ -231,6 +235,13 @@ def get_provider_for_role(role: str) -> str:
             return setting.value
         legacy = session.get(FactorySetting, "media_provider")
         selected = legacy.value if legacy else get_settings().media_provider
+    paid_default = PAID_ONLY_ROLES.get(role)
+    if paid_default and paid_default in PROVIDER_ROLES[role]:
+        # A free or unconfigured route was selected earlier: use the paid
+        # default instead so every step runs on a paid provider.
+        if selected in PROVIDER_ROLES[role] and selected not in {"template", "off"}:
+            return selected
+        return paid_default
     if role == "script":
         return selected if selected in {"openai", "gemini", "huggingface", "minimax"} else "template"
     if role == "video":

@@ -43,13 +43,13 @@ def test_character_list_is_reportable():
 
 
 def test_parse_dialogue_reads_tagged_lines():
-    script = "शेरू भाई: पचास करोड़? ठीक है।\nभालू भाई: सौ करोड़?!"
+    script = "शेरू भाई: पचास करोड़? ठीक है।\nग्रीम पैंथर: सौ करोड़?!"
 
     lines = parse_dialogue(script)
 
     assert [line.text for line in lines] == ["पचास करोड़? ठीक है।", "सौ करोड़?!"]
-    assert lines[0].character_id == "emerald_panther"
-    assert lines[1].character_id == "bear_mafia"
+    assert lines[0].character_id == "white_lion_boss"
+    assert lines[1].character_id == "emerald_panther"
 
 
 def test_parse_dialogue_keeps_untagged_narration():
@@ -65,7 +65,7 @@ def test_cast_for_lines_lists_the_speakers():
     cast = cast_for_lines(parse_dialogue(script))
 
     assert [character.character_id for character in cast] == [
-        "emerald_panther",
+        "white_lion_boss",
         "white_tiger_don",
     ]
 
@@ -80,5 +80,14 @@ def test_dialogue_text_drops_the_tags():
 def test_cast_prompt_lists_every_character():
     prompt = cast_prompt([default_character()])
 
-    assert "emerald_panther" in prompt
+    assert "white_lion_boss" in prompt
     assert default_character().personality[:20] in prompt
+
+
+def test_the_default_character_matches_the_trend_look():
+    character = default_character()
+
+    assert character.character_id == "white_lion_boss"
+    assert "white" in character.look
+    assert "gold chain" in character.look
+    assert "sunglasses" in character.look

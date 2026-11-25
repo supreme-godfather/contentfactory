@@ -510,6 +510,11 @@ def _enforce_cliffhanger(script: str, series_context: dict | None) -> str:
     body = script.strip()
     if body.endswith(cliffhanger):
         return body
+    if ":" in body.splitlines()[0] and "|" not in body.splitlines()[0]:
+        # A dialogue scene: the cliffhanger belongs to the lead character.
+        lead = body.splitlines()[0].split(":", 1)[0].strip()
+        if lead:
+            return f"{body}\n{lead}: {cliffhanger}"
     return f"{body}\n\n{cliffhanger}"
 
 

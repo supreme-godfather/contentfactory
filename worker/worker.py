@@ -889,7 +889,10 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                         job.get("format") in {"instagram_reel", "vertical_short"}
                         and job.get("voice_provider") != "off"
                         and "voiceover" not in (job.get("assets") or {})
-                        and "dialogue_parts" not in (job.get("assets") or {})
+                        and not any(
+                            key.startswith("dialogue_part_")
+                            for key in (job.get("assets") or {})
+                        )
                     ):
                         raise RuntimeError(
                             f"{job['voice_provider']} narration was selected but no voiceover asset was supplied"

@@ -954,8 +954,6 @@ def _generate_role_asset(
                     prompt_override or _image_prompt(topic),
                     destination,
                 )
-            elif provider == "edge_tts" and role == "voice":
-                generate_edge_tts_voiceover(script, destination)
             elif provider == "elevenlabs" and role == "voice":
                 generate_elevenlabs_voiceover(script, destination)
             elif provider == "fish_audio" and role == "voice":
@@ -978,10 +976,7 @@ def _generate_role_asset(
             )
             if index + 1 == len(candidates):
                 logger.warning("No configured fallback provider remains for %s generation", role)
-        except RuntimeError as exc:
-            if provider != "edge_tts":
-                raise
-            logger.warning("Edge TTS was unavailable (%s)", type(exc).__name__)
+        except RuntimeError:
             raise
     return False
 

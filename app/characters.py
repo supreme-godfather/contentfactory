@@ -37,20 +37,34 @@ class Character:
 
 
 CHARACTERS: dict[str, Character] = {
-    "emerald_panther": Character(
-        character_id="emerald_panther",
+    "white_lion_boss": Character(
+        character_id="white_lion_boss",
         label="शेरू भाई",
-        role="The calm boss everyone answers to",
+        role="The white-suited lion boss every story starts with",
         look=(
-            "an original anthropomorphic black panther businessman with a human-like body, "
-            "sleek black fur, a thick mane, expressive amber eyes and a calm, faintly amused "
-            "expression. He wears a deep emerald velvet three-piece suit, a white shirt, a gold "
-            "watch and a heavy gold chain"
+            "a photoreal adult white lion with a full white mane, a human-like upright "
+            "body, calm confident amber eyes and a faint authoritative smirk. He wears a "
+            "white three-piece suit, a black tie, a thick gold chain, a gold watch and "
+            "black sunglasses"
         ),
         personality="calm, unbothered, speaks once and the room obeys",
         voice_profile={"speed": 0.9, "pitch": -2, "vol": 1},
         speech="Short, heavy, confident Hindi lines. Never threatens, never curses.",
         default=True,
+    ),
+    "emerald_panther": Character(
+        character_id="emerald_panther",
+        label="ग्रीम पैंथर",
+        role="The rival who answers every bid",
+        look=(
+            "an original anthropomorphic black panther businessman with a human-like body, "
+            "sleek black fur, a thick mane, expressive amber eyes and a calm, faintly amused "
+            "expression. He wears a deep emerald velvet three-piece suit, a black tie, dark "
+            "sunglasses, a gold watch and a heavy gold chain"
+        ),
+        personality="calm, unbothered, answers with one absurd number",
+        voice_profile={"speed": 0.92, "pitch": -1, "vol": 1},
+        speech="Short, heavy, confident Hindi lines. Never threatens, never curses.",
     ),
     "bear_mafia": Character(
         character_id="bear_mafia",
@@ -121,7 +135,7 @@ CHARACTERS: dict[str, Character] = {
     ),
 }
 
-DEFAULT_CHARACTER_ID = "emerald_panther"
+DEFAULT_CHARACTER_ID = "white_lion_boss"
 
 
 def get_character(character_id: str | None) -> Character:

@@ -1605,6 +1605,35 @@ def list_packs(_: None = Depends(require_admin_api_token)) -> list[dict[str, obj
     ]
 
 
+class ProviderRoleRequest(BaseModel):
+    role: str = Field(pattern="^(script|image|voice|video)$")
+    provider: str = Field(min_length=1, max_length=60)
+    allow_paid: bool = True
+
+
+@app.post("/api/admin/providers/role")
+def provider_role_endpoint(
+    request: ProviderRoleRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    from .provider_credentials import (
+        get_provider_for_role,
+        set_no_paid_providers_enabled,
+        set_provider_for_role,
+    )
+
+    try:
+        set_provider_for_role(request.role, request.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    set_no_paid_providers_enabled(not request.allow_paid)
+    return {
+        "role": request.role,
+        "provider": get_provider_for_role(request.role),
+        "paid_providers_allowed": request.allow_paid,
+    }
+
+
 @app.get("/api/credits")
 def credit_summary_endpoint(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
     from .credits import active_series_spend, money_summary

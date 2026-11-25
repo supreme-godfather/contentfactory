@@ -154,24 +154,25 @@ PACKS: dict[str, Pack] = {
     # ── Series formats ─────────────────────────────────────────────────────
     "cinematic_boss_series": Pack(
         pack_id="cinematic_boss_series",
-        label="Cinematic Boss Series (original character)",
+        label="Sheru-style Story Reels (original characters)",
         summary=(
-            "A recurring original cinematic character in a multi-part story: dramatic "
-            "entrance, rising stakes, a hard cliffhanger every part, the payoff at the end."
+            "Entertainment, not education: a recurring cinematic character in a short "
+            "two-voice story with a cliffhanger, released as a series."
         ),
         writer_directives=(
             "Write a CINEMATIC DIALOGUE SCENE in Hindi for a recurring character. "
-            "This is a conversation between two characters, not a narration.\n"
+            "This is entertainment, not an explainer: a conversation between two "
+            "characters, never a lesson and never a narration.\n"
             "Format: every line is tagged with its speaker, one line per turn:\n"
             "शेरू भाई: पचास करोड़? ठीक है। सौ करोड़।\n"
-            "भालू भाई: सौ करोड़?! तू पागल है!\n"
+            "ग्रीम पैंथर: सौ करोड़?! तू पागल है!\n"
             "Rules: each line is under nine words; the first line is a one-sentence hook "
             "that lands in the first second and starts a curiosity gap; the second "
             "character answers with shock or a challenge; the boss answers with one "
-            "comically absurd escalation; keep money comic and huge, never cruel; "
-            "no narration paragraphs, no scene descriptions, no stage directions; "
-            "never mention AI, templates or creators; never use a real person's name; "
-            "family-safe, no abuse and no threats."
+            "comically absurd escalation; keep the money comic and huge, never cruel; "
+            "no narration paragraphs, no scene descriptions, no stage directions, no "
+            "subscribe line, no question to the viewer; never mention AI, templates or "
+            "creators; never use a real person's name; family-safe, no abuse, no threats."
         ),
         visual_anchor=(
             "Cinematic 9:16 film look: deep emerald and charcoal palette with warm gold "
@@ -202,8 +203,8 @@ PACKS: dict[str, Pack] = {
         voice_direction="Deep, calm, unhurried male Hindi voice with quiet confidence.",
         voice_profile={"speed": 0.9, "pitch": -2, "vol": 1},
         dialogue_mode=True,
-        cast=("emerald_panther", "bear_mafia"),
-        default_character="emerald_panther",
+        cast=("white_lion_boss", "emerald_panther"),
+        default_character="white_lion_boss",
         target_duration_seconds=18,
         video_scene_count=3,
         series_ready=True,
