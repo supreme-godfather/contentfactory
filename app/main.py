@@ -1611,6 +1611,16 @@ class ProviderRoleRequest(BaseModel):
     allow_paid: bool = True
 
 
+@app.post("/api/admin/queues/requeue-stuck")
+def requeue_stuck_endpoint(
+    minutes: int = 25,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, int]:
+    from .maintenance import requeue_stuck_asset_jobs
+
+    return requeue_stuck_asset_jobs(minutes)
+
+
 @app.post("/api/admin/providers/role")
 def provider_role_endpoint(
     request: ProviderRoleRequest,

@@ -28,6 +28,42 @@ class QualityReport:
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
+def _dialogue_findings(dialogue_lines: object, *, cliffhanger: str = "") -> list[str]:
+    """Judge a dialogue scene against the format's rules."""
+    if not isinstance(dialogue_lines, list) or not dialogue_lines:
+        return ["missing_dialogue"]
+    lines = [
+        line
+        for line in dialogue_lines
+        if isinstance(line, dict) and str(line.get("text") or "").strip()
+    ]
+    if not lines:
+        return ["missing_dialogue"]
+    findings: list[str] = []
+    if len(lines) < 4:
+        findings.append("dialogue_too_few_turns")
+    if len(lines) > 10:
+        findings.append("dialogue_too_many_turns")
+    spoken = [
+        line
+        for line in lines
+        if cliffhanger and cliffhanger not in str(line.get("text") or "")
+    ] or lines
+    if any(len(str(line.get("text") or "").split()) > 9 for line in spoken):
+        findings.append("dialogue_line_too_long")
+    speakers = {
+        str(line.get("character_id") or line.get("speaker") or "") for line in lines
+    }
+    if len(speakers - {""}) < 2:
+        findings.append("dialogue_needs_two_speakers")
+    if not any(
+        str(line.get("text") or "").strip().endswith(("।", "?", "!", "…"))
+        for line in lines
+    ):
+        findings.append("dialogue_missing_speakable_endings")
+    return findings
+
+
 def validate_content(*, topic: str, script: str | None, metadata_json: str | None, render_path: str | None) -> QualityReport:
     blockers: list[str] = []
     warnings: list[str] = []
@@ -90,6 +126,14 @@ def validate_content(*, topic: str, script: str | None, metadata_json: str | Non
                     blockers.append("missing_cliffhanger")
             if part_index > 1 and not metadata.get("previous_recap"):
                 warnings.append("missing_series_recap")
+
+        if metadata.get("dialogue_mode"):
+            warnings.extend(
+                _dialogue_findings(
+                    metadata.get("dialogue_lines"),
+                    cliffhanger=str(metadata.get("cliffhanger") or ""),
+                )
+            )
 
     if script and len(script.strip()) >= minimum_script_chars and not is_clip:
         structure = script_structure(script)

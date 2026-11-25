@@ -547,6 +547,8 @@ def _script_prompt(
     )
     pack_block = f"\nFormat pack (follow it):\n{pack_directive}\n" if pack_directive else ""
     if dialogue_mode:
+        from .lines import register_directives
+
         return (
             f"Topic: {topic}\n"
             f"Channel niche: {niche_label}\n"
@@ -555,6 +557,7 @@ def _script_prompt(
             f"{pack_block}"
             f"{_series_prompt_block(series_context)}"
             f"{DIALOGUE_RULES}\n"
+            f"{register_directives()}\n"
             f"{direction}{extra}"
             f"\nWrite the dialogue now."
         )
@@ -824,6 +827,25 @@ def build_script_package(
         except Exception:
             logger.warning("Retention editor pass failed; keeping the valid draft", exc_info=True)
 
+    try:
+        from .packs import get_pack
+
+        pack = get_pack(pack_id)
+        if pack.dialogue_mode:
+            api_key = minimax_text_key()
+            if api_key:
+                punched = punch_up_dialogue(
+                    str(package["script"]),
+                    topic,
+                    api_key,
+                    pack_id=pack_id,
+                )
+                if punched and punched != package["script"]:
+                    package["script"] = punched
+                    package["punch"] = {"applied": True}
+    except Exception:
+        logger.warning("Dialogue punch-up pass failed", exc_info=True)
+
     final_script = _enforce_cliffhanger(str(package["script"]), series_context)
     package["script"] = final_script
     try:
@@ -885,6 +907,72 @@ def build_script_package(
     if hooks:
         package["metadata"]["hook_variants"] = hooks
     return package
+
+
+def punch_up_dialogue(
+    script: str,
+    topic: str,
+    api_key: str,
+    *,
+    pack_id: str | None = None,
+) -> str:
+    """Rewrite a dialogue scene harder and funnier, keeping the format.
+
+    This is the pass that turns a readable exchange into the swagger register
+    the format actually runs on: arrogance, dismissal, comic shock, and one
+    quotable closing line.
+    """
+    from .lines import PUNCH_RULES, register_directives
+    from .packs import get_pack
+
+    pack = get_pack(pack_id)
+    allowed = ""
+    if pack.cast:
+        from .characters import get_character
+
+        labels = ", ".join(get_character(character_id).label for character_id in pack.cast)
+        allowed = (
+            f"Only these two speakers may appear, nothing else: {labels}. "
+            "Do not add an auctioneer, a shopkeeper, a narrator or any other "
+            "character. Keep exactly the speakers that are already in the scene.\n"
+        )
+    prompt = (
+        "You punch up a Hindi dialogue scene for a vertical reel.\n"
+        "Return ONLY the rewritten scene in the same tagged format, nothing else.\n\n"
+        f"{PUNCH_RULES}\n"
+        f"{allowed}\n"
+        "The register to aim for:\n"
+        f"{register_directives()}\n\n"
+        f"Scene: {topic}\n\n"
+        "SCENE TO PUNCH UP:\n"
+        f"{script[:2500]}"
+    )
+    try:
+        raw = _minimax_chat(
+            api_key,
+            DIALOGUE_SYSTEM,
+            prompt,
+            max_tokens=2200,
+            temperature=0.85,
+        )
+    except Exception:
+        logger.warning("Dialogue punch-up failed; keeping the drafted scene", exc_info=True)
+        return script
+    from .dialogue import parse_dialogue
+
+    lines = [line for line in parse_dialogue(raw) if line.text]
+    if not lines:
+        return script
+    if pack.cast:
+        allowed_ids = set(pack.cast)
+        for line in lines:
+            if line.character_id and line.character_id not in allowed_ids:
+                logger.warning(
+                    "Dialogue punch-up invented the speaker %s; keeping the drafted scene",
+                    line.speaker,
+                )
+                return script
+    return raw.strip()
 
 
 def build_hook_variants(

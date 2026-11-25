@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, func, select, update
@@ -45,6 +46,39 @@ def clear_broken_rendered_jobs() -> dict[str, int]:
             removed += 1
         session.commit()
     return {"broken_render_jobs_removed": removed}
+
+
+def requeue_stuck_asset_jobs(max_age_minutes: int = 25) -> dict[str, int]:
+    """Recover jobs whose asset generation was interrupted.
+
+    A deploy or a crash can kill the worker thread that was generating a
+    job's media, which leaves the job in ``generating_assets`` forever. Any
+    job that has been sitting there without progress for longer than the
+    window is put back in the queue.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(max_age_minutes)))
+    requeued = 0
+    with SessionLocal() as session:
+        jobs = list(
+            session.scalars(
+                select(ContentJob).where(ContentJob.status == "generating_assets")
+            )
+        )
+        for job in jobs:
+            updated = job.updated_at
+            if updated is not None and updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            if updated is not None and updated > cutoff:
+                continue
+            job.status = "queued"
+            job.stage = "assets"
+            job.error_message = None
+            job.claimed_by = None
+            job.lease_expires_at = None
+            job.updated_at = datetime.now(timezone.utc)
+            requeued += 1
+        session.commit()
+    return {"jobs_requeued": requeued}
 
 
 def reset_factory_content() -> dict[str, int]:

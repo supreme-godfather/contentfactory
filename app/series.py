@@ -84,7 +84,7 @@ def _fallback_plan(topic: str, pack: Pack, part_count: int) -> SeriesPlan:
         cliffhanger = (
             f"लेकिन असली खेल तो अब शुरू हुआ है।"
             if is_last
-            else f"और तभी दरवाज़े पर किसी की आवाज़ आई… भाग {index + 1} में।"
+            else f"दरवाज़े पर आवाज़ आई… भाग {index + 1} में।"
         )
         parts.append(
             PartPlan(
