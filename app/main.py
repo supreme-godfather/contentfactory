@@ -237,6 +237,35 @@ def ready() -> dict[str, str]:
     return {"status": "ready", "service": "hindi-content-factory"}
 
 
+@app.get("/media/ref/{filename}")
+def public_media_reference(filename: str, t: str = "") -> FileResponse:
+    """Serve a generated file through a signed URL.
+
+    Generation providers fetch reference files (the character sheet, a spoken
+    line) while the job is still being produced, so the file cannot be tied to
+    a finished job yet. The signature keeps the route private.
+    """
+    from .media_tokens import verify_reference
+
+    if Path(filename).name != filename:
+        raise HTTPException(status_code=404, detail="Media not found")
+    if not verify_reference(filename, t):
+        raise HTTPException(status_code=403, detail="Invalid reference token")
+    media_root = Path(get_settings().media_root).resolve()
+    path = (media_root / filename).resolve()
+    if path.parent != media_root or not path.is_file():
+        raise HTTPException(status_code=404, detail="Media not found")
+    if filename.endswith(".mp4"):
+        media_type = "video/mp4"
+    elif filename.endswith(".png"):
+        media_type = "image/png"
+    elif filename.endswith(".mp3"):
+        media_type = "audio/mpeg"
+    else:
+        media_type = "image/jpeg"
+    return FileResponse(path, media_type=media_type)
+
+
 @app.get("/media/{filename}")
 def public_media(filename: str) -> FileResponse:
     """Serve completed videos, generated covers and job assets.
@@ -1619,6 +1648,37 @@ def requeue_stuck_endpoint(
     from .maintenance import requeue_stuck_asset_jobs
 
     return requeue_stuck_asset_jobs(minutes)
+
+
+@app.post("/api/admin/higgsfield/probe")
+def higgsfield_probe_endpoint(
+    kind: str = "image",
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    """Run one tiny Higgsfield call and report exactly what happened."""
+    import tempfile
+
+    from . import higgsfield
+
+    with tempfile.TemporaryDirectory() as temp:
+        destination = Path(temp) / "probe.bin"
+        try:
+            if kind == "video":
+                estimated, spent = higgsfield.wan_video(
+                    "A slow cinematic push-in on a white marble hall, warm gold light",
+                    destination,
+                    duration=5,
+                    resolution="720p",
+                )
+            else:
+                estimated, spent = higgsfield.soul_image(
+                    "A photorealistic white lion in a white three-piece suit with a thick "
+                    "gold chain, cinematic portrait, warm light",
+                    destination,
+                )
+        except Exception as exc:
+            return {"ok": False, "kind": kind, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True, "kind": kind, "estimated_usd": estimated, "spent_usd": spent}
 
 
 @app.post("/api/admin/providers/role")

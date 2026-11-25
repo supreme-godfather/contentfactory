@@ -41,10 +41,28 @@ def test_public_media_url_needs_a_public_base_url(monkeypatch):
         lambda: type("S", (), {"public_base_url": "https://factory.example"})(),
     )
 
-    assert (
-        higgsfield.public_media_url("character.jpg")
-        == "https://factory.example/media/character.jpg"
+    url = higgsfield.public_media_url("character.jpg")
+
+    assert url is not None
+    assert url.startswith("https://factory.example/media/ref/character.jpg")
+    assert "t=" in url
+
+
+def test_a_reference_url_is_signed(monkeypatch):
+    from app import higgsfield
+    from app.media_tokens import reference_token, verify_reference
+
+    monkeypatch.setattr(
+        higgsfield,
+        "get_settings",
+        lambda: type("S", (), {"public_base_url": "https://factory.example"})(),
     )
+
+    url = higgsfield.public_media_url("line-1.mp3") or ""
+    token = url.split("t=", 1)[-1]
+
+    assert verify_reference("line-1.mp3", token) is True
+    assert verify_reference("line-2.mp3", token) is False
 
 
 def test_public_media_url_rejects_a_path(monkeypatch):

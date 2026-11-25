@@ -461,6 +461,10 @@ def create_job_assets(
 
     media_root.mkdir(parents=True, exist_ok=True)
     assets: dict[str, str] = {}
+    if character_reference is not None and character_reference.is_file():
+        # The sheet has to be reachable by URL: the video models fetch it as a
+        # reference image.
+        assets["character_sheet"] = character_reference.name
     image_provider = get_provider_for_role("image")
     video_provider = get_provider_for_role("video")
     scene_prompts = _huggingface_scene_prompts(topic, script, storyboard or [])
@@ -526,53 +530,80 @@ def create_job_assets(
             video_scenes = (1, 3, 5)
         elif max(1, int(video_scene_count)) >= 4 and len(scene_prompts) >= 7:
             video_scenes = (1, 3, 5, 7)
-        if video_provider == "minimax":
+        if video_provider == "off":
+            video_plan = {}
+        elif video_provider == "minimax":
+            video_plan = {index: "minimax" for index in video_scenes}
+        elif video_provider == "mixed_minimax_higgsfield":
+            # MiniMax carries the pace; Higgsfield delivers the talking payoff.
+            video_plan = {
+                index: ("higgsfield_seedance" if index == video_scenes[-1] else "minimax")
+                for index in video_scenes
+            }
+        else:
+            video_plan = {index: video_provider for index in video_scenes}
+        if video_plan:
             if no_paid_providers_enabled():
                 raise RuntimeError(
-                    "MiniMax video generation is blocked while no-paid mode is ON."
+                    "Video generation is blocked while no-paid mode is ON."
                 )
-            if not provider_status().get("minimax"):
-                raise RuntimeError("MiniMax video generation requires a configured API key.")
             from .cost import get_unit_prices, record_usage
 
-            price = get_unit_prices()["minimax_video_per_second"]
+            prices = get_unit_prices()
+            minimax_scenes = [
+                index for index, route in video_plan.items() if route == "minimax"
+            ]
+            higgsfield_scenes = [
+                index for index, route in video_plan.items() if route != "minimax"
+            ]
+            if minimax_scenes:
+                if not provider_status().get("minimax"):
+                    raise RuntimeError("MiniMax video generation requires a configured API key.")
 
-            def _make_minimax(index: int) -> tuple[str, str]:
-                video = media_root / f"{job_id}-scene-video-{index}.mp4"
-                generate_minimax_video(
-                    scene_prompts[index - 1],
-                    video,
-                    first_frame=character_reference,
+                def _make_minimax(index: int) -> tuple[str, str]:
+                    video = media_root / f"{job_id}-scene-video-{index}.mp4"
+                    generated.append(video)
+                    generate_minimax_video(
+                        scene_prompts[index - 1],
+                        video,
+                        first_frame=character_reference,
+                    )
+                    return f"scene_video_{index}", video.name
+
+                for key, name in _parallel_map(_make_minimax, minimax_scenes):
+                    assets[key] = name
+                    record_usage(
+                        job_id,
+                        "minimax",
+                        "video",
+                        5,
+                        "second",
+                        prices["minimax_video_per_second"],
+                    )
+            if higgsfield_scenes:
+                if not provider_status().get("higgsfield"):
+                    raise RuntimeError(
+                        "Higgsfield video generation requires a configured API key."
+                    )
+                _generate_higgsfield_scenes(
+                    job_id,
+                    video_plan,
+                    scene_prompts,
+                    higgsfield_scenes,
+                    media_root,
+                    assets,
+                    generated,
+                    character_reference,
+                    assets,
+                    record_usage,
+                    prices["higgsfield_credit"],
                 )
-                return f"scene_video_{index}", video.name
-
-            results = _parallel_map(_make_minimax, video_scenes)
-            for key, name in results:
-                assets[key] = name
-                record_usage(job_id, "minimax", "video", 5, "second", price)
-        elif video_provider.startswith("higgsfield"):
-            if no_paid_providers_enabled():
-                raise RuntimeError(
-                    "Higgsfield video generation is blocked while no-paid mode is ON."
-                )
-            if not provider_status().get("higgsfield"):
-                raise RuntimeError("Higgsfield video generation requires a configured API key.")
-            from .cost import get_unit_prices, record_usage
-
-            _generate_higgsfield_scenes(
-                job_id,
-                video_provider,
-                scene_prompts,
-                video_scenes,
-                media_root,
-                assets,
-                generated,
-                character_reference,
-                assets.get("voiceover"),
-                record_usage,
-            )
 
         if image_provider != "off":
+            if no_paid_providers_enabled():
+                raise RuntimeError(
+                    "Image generation is blocked while no-paid mode is ON."
+                )
             from .cost import get_unit_prices, record_usage
 
             prices = get_unit_prices()
@@ -610,13 +641,15 @@ def create_job_assets(
                         reference_url = higgsfield.public_media_url(lead)
                 if reference_url:
                     try:
-                        generate_minimax_image(
+                        from . import higgsfield
+
+                        higgsfield.soul_image(
                             prompt,
                             image,
-                            subject_reference_url=reference_url,
+                            reference_urls=[reference_url],
                         )
                         assets[f"scene_{index}"] = image.name
-                        record_usage(job_id, "minimax", "image", 1, "image", image_price)
+                        record_usage(job_id, "higgsfield", "image", 1, "image", 0.0032)
                         continue
                     except Exception:
                         logger.warning(
@@ -625,6 +658,20 @@ def create_job_assets(
                             exc_info=True,
                         )
                         image.unlink(missing_ok=True)
+                if image_provider == "higgsfield_soul":
+                    try:
+                        from . import higgsfield
+
+                        higgsfield.soul_image(prompt, image)
+                        assets[f"scene_{index}"] = image.name
+                        record_usage(job_id, "higgsfield", "image", 1, "image", 0.0032)
+                        continue
+                    except Exception:
+                        logger.warning(
+                            "SOUL scene %s could not be generated", index, exc_info=True
+                        )
+                        image.unlink(missing_ok=True)
+                        continue
                 if image_provider == "huggingface":
                     try:
                         generate_huggingface_image(prompt, image)
@@ -742,64 +789,51 @@ def _parallel_map(function, items, workers: int = 3) -> list:
 
 def _generate_higgsfield_scenes(
     job_id: str,
-    video_provider: str,
+    video_plan: dict[int, str],
     scene_prompts: list[str],
-    video_scenes: tuple[int, ...],
+    video_scenes: list[int],
     media_root: Path,
     assets: dict[str, str],
     generated: list[Path],
     character_reference: Path | None,
-    voiceover_name: str | None,
+    asset_files: dict[str, str],
     record_usage,
+    credit_price: float,
 ) -> None:
     """Generate the video scenes through Higgsfield and record the credits.
 
-    Four workflows are supported:
-
-    - ``higgsfield`` — Wan 2.6 text-to-video (no reference).
-    - ``higgsfield_seedance`` — Seedance 2.0 with the character image and the
-      dialogue audio as references: the character speaks the line.
-    - ``higgsfield_wan_audio`` — Wan 2.6 with the dialogue audio as reference.
-    - ``higgsfield_kling`` — Kling 2.6 with native sound, no voice-over needed.
+    The Seedance workflow takes the character image and the dialogue audio as
+    references, so the character speaks the line on camera. The audio
+    references are the spoken dialogue parts, newest first, which is where the
+    climax sits.
     """
     from . import higgsfield
-    from .credits import affordable_shots, money_summary
 
     character_url = None
     if character_reference is not None and character_reference.is_file():
         character_url = higgsfield.public_media_url(character_reference.name)
-    voice_url = None
-    if voiceover_name:
-        voice_url = higgsfield.public_media_url(voiceover_name)
-
-    endpoint = {
-        "higgsfield_seedance": higgsfield.SEEDANCE_REFERENCE,
-        "higgsfield_wan_audio": higgsfield.WAN_TEXT,
-        "higgsfield_kling": higgsfield.KLING_IMAGE,
-    }.get(video_provider, higgsfield.WAN_TEXT)
-
-    # The balance decides how many shots this reel can have: the factory spends
-    # what it has instead of failing half way through a story.
-    summary = money_summary()
-    remaining = float(summary.get("remaining_usd") or 0.0)
-    price_per_shot = higgsfield.credit_cost(endpoint, resolution="720p", seconds=5)
-    affordable = affordable_shots(remaining, price_per_shot, len(video_scenes))
-    if affordable < len(video_scenes):
-        logger.warning(
-            "The Higgsfield balance only pays for %s of %s shots at $%.2f each",
-            affordable,
-            len(video_scenes),
-            price_per_shot,
-        )
-        video_scenes = tuple(video_scenes[:affordable])
+    dialogue_urls: list[str] = []
+    part_indexes = sorted(
+        int(key.rsplit("_", 1)[-1])
+        for key in asset_files
+        if key.startswith("dialogue_part_") and key.rsplit("_", 1)[-1].isdigit()
+    )
+    for index in reversed(part_indexes[-3:]):
+        name = asset_files.get(f"dialogue_part_{index}")
+        if not isinstance(name, str):
+            continue
+        url = higgsfield.public_media_url(name)
+        if url:
+            dialogue_urls.append(url)
 
     for index in video_scenes:
         if index > len(scene_prompts):
             continue
+        route = video_plan.get(index, "higgsfield")
         prompt = scene_prompts[index - 1]
         video = media_root / f"{job_id}-scene-video-{index}.mp4"
         generated.append(video)
-        if video_provider == "higgsfield_seedance":
+        if route == "higgsfield_seedance":
             if not character_url:
                 raise RuntimeError(
                     "The Seedance workflow needs a public character image reference."
@@ -808,24 +842,24 @@ def _generate_higgsfield_scenes(
                 prompt,
                 video,
                 image_urls=[character_url],
-                audio_urls=[voice_url] if voice_url else None,
+                audio_urls=dialogue_urls or None,
                 duration=5,
                 resolution="720p",
                 aspect_ratio="9:16",
             )
-        elif video_provider == "higgsfield_wan_audio":
-            if not voice_url:
+        elif route == "higgsfield_wan_audio":
+            if not dialogue_urls:
                 raise RuntimeError(
                     "The Wan audio workflow needs a public dialogue audio reference."
                 )
             estimated, spent = higgsfield.wan_video(
                 prompt,
                 video,
-                audio_url=voice_url,
+                audio_url=dialogue_urls[0],
                 duration=5,
                 resolution="720p",
             )
-        elif video_provider == "higgsfield_kling":
+        elif route == "higgsfield_kling":
             estimated, spent = higgsfield.kling_video(
                 prompt,
                 video,

@@ -681,11 +681,11 @@ def _series_character_reference(
         if existing.is_file():
             return existing
     try:
-        from .google_media import generate_minimax_image
+        from . import higgsfield
 
         filename = f"{series_id}-character.jpg"
         destination = media_root / filename
-        generate_minimax_image(character.sheet(), destination)
+        higgsfield.soul_image(character.sheet(), destination)
     except Exception as exc:
         logger.warning("Character sheet generation failed: %s", exc)
         return None

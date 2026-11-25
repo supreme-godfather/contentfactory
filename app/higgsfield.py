@@ -126,13 +126,12 @@ def base_url() -> str:
 
 
 def public_media_url(filename: str) -> str | None:
-    """The public URL of a media file, which Higgsfield needs for references."""
+    """The signed public URL of a media file, which providers can fetch."""
     if Path(filename).name != filename:
         return None
-    settings = get_settings()
-    if not settings.public_base_url:
-        return None
-    return f"{settings.public_base_url.rstrip('/')}/media/{filename}"
+    from .media_tokens import reference_url
+
+    return reference_url(get_settings().public_base_url, filename)
 
 
 def credit_cost(endpoint: str, *, resolution: str = "720p", seconds: int = 5) -> float:
@@ -185,7 +184,15 @@ def _poll(status_url: str, *, timeout_seconds: int = 900) -> dict:
         if status == "completed":
             return result
         if status in {"failed", "nsfw", "canceled", "cancelled", "error"}:
-            raise HiggsfieldError(f"Higgsfield request ended with status {status}.")
+            detail = (
+                result.get("error")
+                or result.get("base_resp")
+                or (result.get("task") or {}).get("error")
+                or ""
+            )
+            raise HiggsfieldError(
+                f"Higgsfield request ended with status {status}: {str(detail)[:300]}"
+            )
         time.sleep(delay)
         delay = min(20, delay + 2)
     raise HiggsfieldError("Higgsfield request timed out.")
@@ -342,11 +349,28 @@ def soul_image(
     aspect_ratio: str = "9:16",
     timeout_seconds: int = 600,
 ) -> tuple[float, float]:
-    """A SOUL character image, optionally guided by reference images."""
+    """A SOUL character image, optionally guided by reference images.
+
+    SOUL is Higgsfield's character model: it keeps a face or a creature
+    consistent across images, which is what the scene library needs.
+    """
     payload: dict[str, object] = {
         "prompt": prompt[:3000],
         "aspect_ratio": aspect_ratio,
     }
     if reference_urls:
         payload["image_urls"] = reference_urls[:4]
-    return generate_image(SOUL_IMAGE, payload, destination, timeout_seconds=timeout_seconds)
+    try:
+        estimated = estimate_cost(SOUL_IMAGE, payload)
+        status_url = _submit(SOUL_IMAGE, payload)
+    except HiggsfieldError:
+        if not reference_urls:
+            raise
+        # The model may not accept a reference on this route: fall back to the
+        # prompt-only version rather than losing the whole generation.
+        payload.pop("image_urls", None)
+        estimated = estimate_cost(SOUL_IMAGE, payload)
+        status_url = _submit(SOUL_IMAGE, payload)
+    result = _poll(status_url, timeout_seconds=timeout_seconds)
+    _download(_result_url(result), destination)
+    return estimated, IMAGE_USD.get(SOUL_IMAGE, 0.0032)

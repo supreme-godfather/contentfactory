@@ -139,6 +139,13 @@ def _provider_status() -> dict[str, object]:
         script_key_verified = bool(_cached_minimax_key())
     except Exception:
         script_credential = False
+    higgsfield_credential = False
+    try:
+        from .provider_credentials import provider_status
+
+        higgsfield_credential = bool(provider_status().get("higgsfield"))
+    except Exception:
+        higgsfield_credential = False
     return {
         "script_model": settings.minimax_model if settings.minimax_api_key else "unconfigured",
         "media_provider": settings.media_provider if settings.media_generation_enabled else "off",
@@ -148,6 +155,7 @@ def _provider_status() -> dict[str, object]:
         "cooldowns": cooldowns,
         "script_credential": script_credential,
         "script_key_verified": script_key_verified,
+        "higgsfield_credential": higgsfield_credential,
         "youtube": {
             "enabled": bool(settings.youtube_enabled),
             "credential": youtube_ready,

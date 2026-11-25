@@ -107,8 +107,7 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
         "openai": "OpenAI GPT-4o mini",
     },
     "image": {
-        "minimax": "MiniMax image-01 (character reference capable)",
-        "openai": "OpenAI Images",
+        "higgsfield_soul": "Higgsfield SOUL 2 (character consistent)",
         "off": "No AI image",
     },
     "voice": {
@@ -120,6 +119,7 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
     },
     "video": {
         "minimax": "MiniMax H3 text-to-video",
+        "mixed_minimax_higgsfield": "Mixed: MiniMax shots + Higgsfield talking payoff",
         "higgsfield": "Higgsfield · Wan 2.6 (text only)",
         "higgsfield_seedance": "Higgsfield · Seedance 2.0 (character + dialogue)",
         "higgsfield_wan_audio": "Higgsfield · Wan 2.6 (dialogue audio)",
@@ -133,9 +133,9 @@ PROVIDER_ROLES: dict[str, dict[str, str]] = {
 # falls back to a free tool that produces different quality.
 PAID_ONLY_ROLES: dict[str, str] = {
     "script": "minimax",
-    "image": "minimax",
+    "image": "higgsfield_soul",
     "voice": "minimax",
-    "video": "minimax",
+    "video": "mixed_minimax_higgsfield",
 }
 
 
@@ -377,6 +377,21 @@ def provider_candidates_for_role(role: str) -> list[str]:
         if role == "voice" and not get_minimax_voice_id():
             return []
         if provider_cooldown_until(primary) is not None:
+            return []
+        return [primary]
+    if primary == "mixed_minimax_higgsfield":
+        status = provider_status()
+        candidates = []
+        if status.get("minimax"):
+            candidates.append("minimax")
+        if status.get("higgsfield"):
+            candidates.append("higgsfield_seedance")
+        return candidates
+    if primary == "higgsfield_soul":
+        status = provider_status()
+        if not status.get("higgsfield"):
+            return []
+        if provider_cooldown_until("higgsfield") is not None:
             return []
         return [primary]
     if primary == "higgsfield" or primary.startswith("higgsfield_"):

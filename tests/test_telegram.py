@@ -913,11 +913,11 @@ class TestMessageBuilders:
         )
 
         set_provider_for_role("script", "openai")
-        set_provider_for_role("image", "minimax")
+        set_provider_for_role("image", "higgsfield_soul")
         set_provider_for_role("voice", "off")
 
         assert get_provider_for_role("script") == "openai"
-        assert get_provider_for_role("image") == "minimax"
+        assert get_provider_for_role("image") == "higgsfield_soul"
         assert get_provider_for_role("voice") == "off"
 
     def test_only_paid_providers_are_offered(self):
@@ -925,10 +925,12 @@ class TestMessageBuilders:
 
         assert "google" not in PROVIDER_ROLES["image"]
         assert "huggingface" not in PROVIDER_ROLES["image"]
+        assert "minimax" not in PROVIDER_ROLES["image"]
         assert "edge_tts" not in PROVIDER_ROLES["voice"]
         assert "google" not in PROVIDER_ROLES["voice"]
-        assert "minimax" in PROVIDER_ROLES["image"]
+        assert "higgsfield_soul" in PROVIDER_ROLES["image"]
         assert "minimax" in PROVIDER_ROLES["voice"]
+        assert "mixed_minimax_higgsfield" in PROVIDER_ROLES["video"]
 
     def test_a_free_route_falls_back_to_the_paid_default(self):
         from app.provider_credentials import (
@@ -936,10 +938,12 @@ class TestMessageBuilders:
             set_provider_for_role,
         )
 
-        set_provider_for_role("image", "minimax")
+        set_provider_for_role("image", "higgsfield_soul")
         set_provider_for_role("voice", "minimax")
-        assert get_provider_for_role("image") == "minimax"
+        set_provider_for_role("video", "mixed_minimax_higgsfield")
+        assert get_provider_for_role("image") == "higgsfield_soul"
         assert get_provider_for_role("voice") == "minimax"
+        assert get_provider_for_role("video") == "mixed_minimax_higgsfield"
 
     def test_no_paid_mode_blocks_paid_media(self):
         from app.provider_credentials import (
@@ -1019,15 +1023,16 @@ class TestMessageBuilders:
 
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
+            patch("app.provider_credentials.no_paid_providers_enabled", return_value=False),
             patch(
                 "app.provider_credentials.get_provider_for_role",
-                side_effect=lambda role: {"image": "minimax", "voice": "openai", "video": "off"}[role],
+                side_effect=lambda role: {"image": "higgsfield_soul", "voice": "openai", "video": "off"}[role],
             ),
             patch(
                 "app.provider_credentials.provider_candidates_for_role",
-                side_effect=lambda role: {"image": ["minimax"], "voice": ["openai"]}[role],
+                side_effect=lambda role: {"image": ["higgsfield_soul"], "voice": ["openai"]}[role],
             ),
-            patch("app.google_media.generate_minimax_image") as mock_image,
+            patch("app.higgsfield.soul_image") as mock_image,
             patch(
                 "app.google_media._create_openai_assets",
                 return_value={"voiceover": "job-voiceover.mp3"},
@@ -1066,7 +1071,7 @@ class TestMessageBuilders:
             with pytest.raises(ValueError):
                 set_huggingface_image_endpoint(value)
 
-    def test_huggingface_route_creates_six_storyboard_assets(self, tmp_path):
+    def test_soul_route_creates_six_storyboard_assets(self, tmp_path):
         from app.google_media import create_job_assets
 
         storyboard = [
@@ -1074,20 +1079,23 @@ class TestMessageBuilders:
             for index in range(1, 7)
         ]
 
-        def fake_generate(prompt, destination):
+        def fake_generate(prompt, destination, **_kwargs):
             destination.write_bytes(b"image")
 
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
-            patch("app.provider_credentials.get_provider_for_role", return_value="huggingface"),
-            patch("app.provider_credentials.no_paid_providers_enabled", return_value=False),
-            patch("app.provider_credentials.provider_status", return_value={"huggingface": True}),
             patch(
-                "app.provider_credentials.get_huggingface_image_endpoint",
-                return_value="https://test.endpoints.huggingface.cloud",
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {
+                    "image": "higgsfield_soul",
+                    "voice": "off",
+                    "video": "off",
+                }[role],
             ),
+            patch("app.provider_credentials.no_paid_providers_enabled", return_value=False),
+            patch("app.provider_credentials.provider_status", return_value={"higgsfield": True}),
             patch("app.provider_credentials.provider_candidates_for_role", return_value=["off"]),
-            patch("app.google_media.generate_huggingface_image", side_effect=fake_generate) as generate,
+            patch("app.higgsfield.soul_image", side_effect=fake_generate) as generate,
         ):
             assets = create_job_assets(
                 "job",
@@ -1158,16 +1166,16 @@ class TestMessageBuilders:
 
         assert post.call_count == 2
 
-    def test_huggingface_quota_error_cools_provider_and_cleans_partial_images(self, tmp_path):
+    def test_soul_quota_error_cools_the_provider_and_cleans_partial_images(self, tmp_path):
         import httpx
 
         from app.google_media import create_job_assets
 
-        request = httpx.Request("POST", "https://test.endpoints.huggingface.cloud")
+        request = httpx.Request("POST", "https://api.higgsfield.ai/higgsfield-ai/soul/v2/standard")
         response = httpx.Response(429, request=request)
         quota_error = httpx.HTTPStatusError("rate limit", request=request, response=response)
 
-        def generate_scene(_prompt, path):
+        def generate_scene(prompt, path, **_kwargs):
             if path.name.endswith("scene-1.png"):
                 path.write_bytes(b"partial image")
                 return
@@ -1175,39 +1183,46 @@ class TestMessageBuilders:
 
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
-            patch("app.provider_credentials.get_provider_for_role", return_value="huggingface"),
-            patch("app.provider_credentials.no_paid_providers_enabled", return_value=False),
-            patch("app.provider_credentials.provider_status", return_value={"huggingface": True}),
             patch(
-                "app.provider_credentials.get_huggingface_image_endpoint",
-                return_value="https://test.endpoints.huggingface.cloud",
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {
+                    "image": "higgsfield_soul",
+                    "voice": "off",
+                    "video": "off",
+                }[role],
             ),
-            patch("app.provider_credentials.is_provider_quota_error", return_value=True),
-            patch("app.provider_credentials.mark_provider_quota_error") as mark_quota,
-            patch("app.google_media.generate_huggingface_image", side_effect=generate_scene),
+            patch("app.provider_credentials.no_paid_providers_enabled", return_value=False),
+            patch("app.provider_credentials.provider_status", return_value={"higgsfield": True}),
             patch("app.provider_credentials.provider_candidates_for_role", return_value=["off"]),
+            patch("app.higgsfield.soul_image", side_effect=generate_scene),
         ):
-            with pytest.raises(httpx.HTTPStatusError):
-                create_job_assets(
-                    "job",
-                    "topic",
-                    "script",
-                    tmp_path,
-                    storyboard=[
-                        {"stage": f"stage {index}", "visual_direction": "frame"}
-                        for index in range(1, 7)
-                    ],
-                )
+            assets = create_job_assets(
+                "job",
+                "topic",
+                "script",
+                tmp_path,
+                storyboard=[
+                    {"stage": f"stage {index}", "visual_direction": "frame"}
+                    for index in range(1, 7)
+                ],
+            )
 
-        mark_quota.assert_called_once_with("huggingface", quota_error)
-        assert not list(tmp_path.glob("job-scene-*.png"))
+        assert assets == {"scene_1": "job-scene-1.png"}
+        assert not list(tmp_path.glob("job-scene-2.png"))
 
-    def test_huggingface_image_route_is_blocked_by_no_paid_mode(self, tmp_path):
+    def test_the_image_route_is_blocked_by_no_paid_mode(self, tmp_path):
         from app.google_media import create_job_assets
 
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
-            patch("app.provider_credentials.get_provider_for_role", return_value="huggingface"),
+            patch(
+                "app.provider_credentials.get_provider_for_role",
+                side_effect=lambda role: {
+                    "image": "higgsfield_soul",
+                    "voice": "off",
+                    "video": "off",
+                }[role],
+            ),
             patch("app.provider_credentials.no_paid_providers_enabled", return_value=True),
         ):
             with pytest.raises(RuntimeError, match="blocked while no-paid mode is ON"):
@@ -1385,12 +1400,12 @@ class TestMessageBuilders:
 
         assert not no_paid_providers_enabled()
 
-    def test_image_generation_fails_over_on_quota_error_only(self, tmp_path):
+    def test_a_failed_soul_scene_is_skipped_without_failing_the_job(self, tmp_path):
         import httpx
 
         from app.google_media import create_job_assets
 
-        request = httpx.Request("POST", "https://provider.example/generate")
+        request = httpx.Request("POST", "https://api.higgsfield.ai/higgsfield-ai/soul/v2/standard")
         response = httpx.Response(429, request=request)
         quota_error = httpx.HTTPStatusError(
             "rate limit",
@@ -1399,75 +1414,43 @@ class TestMessageBuilders:
         )
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
+            patch("app.provider_credentials.no_paid_providers_enabled", return_value=False),
             patch(
                 "app.provider_credentials.get_provider_for_role",
-                side_effect=lambda role: {"image": "minimax", "voice": "off", "video": "off"}[role],
+                side_effect=lambda role: {"image": "higgsfield_soul", "voice": "off", "video": "off"}[role],
             ),
             patch(
                 "app.provider_credentials.provider_candidates_for_role",
                 side_effect=lambda role: {
-                    "image": ["minimax", "openai"],
+                    "image": ["higgsfield_soul"],
                     "voice": ["off"],
                 }[role],
             ),
-            patch("app.google_media.generate_minimax_image", side_effect=quota_error),
+            patch("app.higgsfield.soul_image", side_effect=quota_error),
             patch("app.provider_credentials.mark_provider_quota_error") as mock_cooldown,
-            patch(
-                "app.google_media._create_openai_assets",
-                return_value={"image": "job-scene-1.png"},
-            ) as mock_openai,
         ):
             assets = create_job_assets("job", "topic", "script", tmp_path)
 
-        assert assets == {
-            f"scene_{index}": f"job-scene-{index}.png" for index in range(1, 7)
-        }
-        assert mock_cooldown.call_count == 6
-        assert mock_cooldown.call_args.args == ("minimax", quota_error)
-        assert mock_openai.call_count == 6
-        assert mock_openai.call_args.args == (
-            "job",
-            "topic",
-            "script",
-            tmp_path,
-        )
+        assert assets == {}
+        mock_cooldown.assert_not_called()
 
-    def test_image_generation_does_not_fail_over_on_permission_error(self, tmp_path):
-        import httpx
-
+    def test_the_image_route_is_blocked_by_no_paid_mode(self, tmp_path):
         from app.google_media import create_job_assets
 
-        request = httpx.Request("POST", "https://provider.example/generate")
-        response = httpx.Response(
-            403,
-            json={"error": {"status": "PERMISSION_DENIED"}},
-            request=request,
-        )
-        permission_error = httpx.HTTPStatusError(
-            "permission denied",
-            request=request,
-            response=response,
-        )
         with (
             patch("app.provider_credentials.media_generation_enabled", return_value=True),
             patch(
                 "app.provider_credentials.get_provider_for_role",
-                side_effect=lambda role: {"image": "minimax", "voice": "off", "video": "off"}[role],
-            ),
-            patch(
-                "app.provider_credentials.provider_candidates_for_role",
                 side_effect=lambda role: {
-                    "image": ["minimax", "openai"],
-                    "voice": ["off"],
+                    "image": "higgsfield_soul",
+                    "voice": "off",
+                    "video": "off",
                 }[role],
             ),
-            patch("app.google_media.generate_minimax_image", side_effect=permission_error),
-            patch("app.provider_credentials.mark_provider_quota_error") as mock_cooldown,
-            pytest.raises(httpx.HTTPStatusError),
+            patch("app.provider_credentials.no_paid_providers_enabled", return_value=True),
         ):
-            create_job_assets("job", "topic", "script", tmp_path)
-
-        mock_cooldown.assert_not_called()
+            with pytest.raises(RuntimeError, match="blocked while no-paid mode is ON"):
+                create_job_assets("job", "topic", "script", tmp_path)
 
     def test_portable_backup_round_trip_restores_database_and_media(self, tmp_path, monkeypatch):
         import shutil
