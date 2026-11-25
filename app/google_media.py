@@ -194,11 +194,17 @@ def generate_huggingface_image(prompt: str, destination: Path) -> None:
     destination.write_bytes(response.content)
 
 
-def generate_minimax_image(prompt: str, destination: Path) -> None:
+def generate_minimax_image(
+    prompt: str,
+    destination: Path,
+    subject_reference_url: str | None = None,
+) -> None:
     """Generate one image with MiniMax image-01.
 
     The image route lives on the v1 path while video generation uses the
-    configured base, so both are tried.
+    configured base, so both are tried. A public character-sheet URL can be
+    passed as a subject reference, which keeps the same character in every
+    generated frame.
     """
     settings = get_settings()
     api_key = settings.minimax_api_key or get_provider_secret("minimax")
@@ -211,6 +217,16 @@ def generate_minimax_image(prompt: str, destination: Path) -> None:
     endpoints = [f"{root}/v1/image_generation"]
     if f"{base_url}/image_generation" not in endpoints:
         endpoints.append(f"{base_url}/image_generation")
+    payload: dict[str, object] = {
+        "model": "image-01",
+        "prompt": prompt[:1500],
+        "aspect_ratio": "9:16",
+        "n": 1,
+    }
+    if subject_reference_url:
+        payload["subject_reference"] = [
+            {"type": "character", "image_file": subject_reference_url}
+        ]
     last_error = ""
     for endpoint in endpoints:
         response = httpx.post(
@@ -219,13 +235,8 @@ def generate_minimax_image(prompt: str, destination: Path) -> None:
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": "image-01",
-                "prompt": prompt[:1500],
-                "aspect_ratio": "9:16",
-                "n": 1,
-            },
-            timeout=180,
+            json=payload,
+            timeout=240,
         )
         if response.status_code >= 400:
             last_error = f"HTTP {response.status_code}: {response.text[:400]}"
@@ -434,6 +445,9 @@ def create_job_assets(
     character_reference: Path | None = None,
     character_prompt: str | None = None,
     voice_profile: dict[str, float] | None = None,
+    dialogue_lines: list[dict[str, object]] | None = None,
+    character_sheets: dict[str, str] | None = None,
+    video_scene_count: int = 2,
 ) -> dict[str, str]:
     from .provider_credentials import (
         get_provider_for_role,
@@ -470,6 +484,17 @@ def create_job_assets(
             and Path(custom_voiceover).name == custom_voiceover
         ):
             assets["voiceover"] = owner_voice.name
+        elif dialogue_lines:
+            # Every line is spoken by its own character, with its own voice.
+            parts = _render_dialogue_parts(
+                job_id,
+                dialogue_lines,
+                media_root,
+                voice_profile,
+            )
+            if parts:
+                for index, name in enumerate(parts, start=1):
+                    assets[f"dialogue_part_{index}"] = name
         elif _generate_role_asset("voice", job_id, topic, script, voiceover, voice_profile=voice_profile):
             assets["voiceover"] = voiceover.name
             timing = voiceover.with_suffix(".timing.json")
@@ -497,6 +522,10 @@ def create_job_assets(
 
         # Expensive provider video is reserved for the hook and the payoff beat.
         video_scenes = (1, 5) if len(scene_prompts) >= 5 else (1,)
+        if max(1, int(video_scene_count)) >= 3 and len(scene_prompts) >= 5:
+            video_scenes = (1, 3, 5)
+        elif max(1, int(video_scene_count)) >= 4 and len(scene_prompts) >= 7:
+            video_scenes = (1, 3, 5, 7)
         if video_provider == "minimax":
             if no_paid_providers_enabled():
                 raise RuntimeError(
@@ -572,6 +601,30 @@ def create_job_assets(
                     continue
                 image = media_root / f"{job_id}-scene-{index}.png"
                 generated.append(image)
+                reference_url = None
+                if character_sheets:
+                    from . import higgsfield
+
+                    lead = character_sheets.get("lead")
+                    if isinstance(lead, str) and lead:
+                        reference_url = higgsfield.public_media_url(lead)
+                if reference_url:
+                    try:
+                        generate_minimax_image(
+                            prompt,
+                            image,
+                            subject_reference_url=reference_url,
+                        )
+                        assets[f"scene_{index}"] = image.name
+                        record_usage(job_id, "minimax", "image", 1, "image", image_price)
+                        continue
+                    except Exception:
+                        logger.warning(
+                            "Character-consistent scene %s could not be generated",
+                            index,
+                            exc_info=True,
+                        )
+                        image.unlink(missing_ok=True)
                 if image_provider == "huggingface":
                     try:
                         generate_huggingface_image(prompt, image)
@@ -642,6 +695,34 @@ def create_job_assets(
                 prices.get(f"{image_provider}_image", 0.0) if image_provider != "minimax" else prices["minimax_image"],
             )
     return assets
+
+
+def _render_dialogue_parts(
+    job_id: str,
+    dialogue_lines: list[dict[str, object]],
+    media_root: Path,
+    voice_profile: dict[str, float] | None,
+) -> list[str]:
+    """Speak every dialogue line with its own character's voice."""
+    from .characters import get_character
+    from .voice_providers import generate_minimax_voiceover
+
+    parts: list[str] = []
+    for index, line in enumerate(dialogue_lines, start=1):
+        text = str(line.get("text") or "").strip()
+        if not text:
+            continue
+        character_id = str(line.get("character_id") or "")
+        character = get_character(character_id) if character_id else None
+        profile = dict(character.voice_profile) if character else dict(voice_profile or {})
+        destination = media_root / f"{job_id}-line-{index}.mp3"
+        try:
+            generate_minimax_voiceover(text, destination, profile)
+        except Exception:
+            logger.warning("Dialogue line %s could not be spoken", index, exc_info=True)
+            continue
+        parts.append(destination.name)
+    return parts
 
 
 def _parallel_map(function, items, workers: int = 3) -> list:

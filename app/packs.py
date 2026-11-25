@@ -42,6 +42,11 @@ class Pack:
     hashtag_pool: tuple[str, ...] = ()
     voice_direction: str = ""
     voice_profile: dict[str, float] = field(default_factory=dict)
+    dialogue_mode: bool = False
+    cast: tuple[str, ...] = ()
+    default_character: str = ""
+    target_duration_seconds: int = 0
+    video_scene_count: int = 2
     series_ready: bool = False
     default_parts: int = 1
     legacy_niche: str = ""
@@ -155,13 +160,18 @@ PACKS: dict[str, Pack] = {
             "entrance, rising stakes, a hard cliffhanger every part, the payoff at the end."
         ),
         writer_directives=(
-            "Write a cinematic Hindi story scene for a recurring character: a calm, "
-            "unshakable boss who answers with one short, heavy line.\n"
-            "Rules: every spoken line is under nine words; lines are dramatic but never "
-            "threatening or abusive; the money or power is always absurdly large and "
-            "comic, never harmful; the scene ends on a hard cliffhanger that makes the "
-            "viewer need the next part; never mention that this is AI or a template; "
-            "never use a real person's name or likeness."
+            "Write a CINEMATIC DIALOGUE SCENE in Hindi for a recurring character. "
+            "This is a conversation between two characters, not a narration.\n"
+            "Format: every line is tagged with its speaker, one line per turn:\n"
+            "शेरू भाई: पचास करोड़? ठीक है। सौ करोड़।\n"
+            "भालू भाई: सौ करोड़?! तू पागल है!\n"
+            "Rules: each line is under nine words; the first line is a one-sentence hook "
+            "that lands in the first second and starts a curiosity gap; the second "
+            "character answers with shock or a challenge; the boss answers with one "
+            "comically absurd escalation; keep money comic and huge, never cruel; "
+            "no narration paragraphs, no scene descriptions, no stage directions; "
+            "never mention AI, templates or creators; never use a real person's name; "
+            "family-safe, no abuse and no threats."
         ),
         visual_anchor=(
             "Cinematic 9:16 film look: deep emerald and charcoal palette with warm gold "
@@ -191,6 +201,11 @@ PACKS: dict[str, Pack] = {
         hashtag_pool=("#SheruStyle", "#CinematicReels", "#HindiReels", "#AIArt", "#Reels"),
         voice_direction="Deep, calm, unhurried male Hindi voice with quiet confidence.",
         voice_profile={"speed": 0.9, "pitch": -2, "vol": 1},
+        dialogue_mode=True,
+        cast=("emerald_panther", "bear_mafia"),
+        default_character="emerald_panther",
+        target_duration_seconds=18,
+        video_scene_count=3,
         series_ready=True,
         default_parts=6,
     ),
@@ -227,6 +242,11 @@ PACKS: dict[str, Pack] = {
         hashtag_pool=("#DesiBoss", "#HindiReels", "#Attitude", "#Reels", "#Facts"),
         voice_direction="Street-smart Hindi male voice, confident and warm.",
         voice_profile={"speed": 0.95, "pitch": -1, "vol": 1},
+        dialogue_mode=True,
+        cast=("emerald_panther", "white_tiger_don"),
+        default_character="emerald_panther",
+        target_duration_seconds=18,
+        video_scene_count=2,
         series_ready=True,
         default_parts=6,
     ),
@@ -249,6 +269,13 @@ def get_pack(pack_id: str | None) -> Pack:
 def pack_directives(pack: Pack) -> str:
     """Writer instructions for a pack, ready to be injected into the prompt."""
     parts = [pack.writer_directives]
+    if pack.dialogue_mode and pack.cast:
+        from .characters import cast_prompt, get_character
+
+        cast = [get_character(character_id) for character_id in pack.cast]
+        parts.append(
+            "The only characters who may speak in this scene:\n" + cast_prompt(cast)
+        )
     if pack.hook_style:
         parts.append(f"Opening style: {pack.hook_style}.")
     if pack.beats:

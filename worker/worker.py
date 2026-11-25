@@ -783,6 +783,63 @@ def render_thumbnails(job: dict, video_path: Path, output_dir: Path) -> dict[str
     return outputs
 
 
+def _build_dialogue_track(
+    job: dict,
+    local_assets: dict,
+    work_dir: Path,
+) -> Path | None:
+    """Join the spoken lines into one dialogue track with a beat between turns.
+
+    Every line was spoken by its own character, so the track is assembled here
+    with a short gap between turns, which is what makes it sound like a
+    conversation instead of a monologue.
+    """
+    part_indexes = sorted(
+        int(key.rsplit("_", 1)[-1])
+        for key in local_assets
+        if key.startswith("dialogue_part_") and key.rsplit("_", 1)[-1].isdigit()
+    )
+    files = [local_assets[f"dialogue_part_{index}"] for index in part_indexes]
+    files = [path for path in files if path.is_file()]
+    if not files:
+        return None
+    silence = work_dir / "dialogue-gap.mp3"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-f", "lavfi", "-i",
+            "anullsrc=r=44100:cl=mono", "-t", "0.28", str(silence),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ordered: list[Path] = []
+    for index, path in enumerate(files):
+        if index:
+            ordered.append(silence)
+        ordered.append(path)
+    listing = work_dir / "dialogue-concat.txt"
+    listing.write_text(
+        "".join(f"file '{path.as_posix()}'\n" for path in ordered),
+        encoding="utf-8",
+    )
+    track = work_dir / "dialogue-track.mp3"
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+            "-c:a", "libmp3lame", "-b:a", "160k", str(track),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not track.is_file():
+        print(f"Dialogue track failed for {job.get('id')}: {result.stderr[-200:]}", flush=True)
+        return None
+    print(f"Dialogue track built with {len(files)} lines for {job.get('id')}", flush=True)
+    return track
+
+
 def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
     worker_id = _configured_worker_id()
     headers = {"X-Worker-Token": token}
@@ -832,6 +889,7 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                         job.get("format") in {"instagram_reel", "vertical_short"}
                         and job.get("voice_provider") != "off"
                         and "voiceover" not in (job.get("assets") or {})
+                        and "dialogue_parts" not in (job.get("assets") or {})
                     ):
                         raise RuntimeError(
                             f"{job['voice_provider']} narration was selected but no voiceover asset was supplied"
@@ -842,6 +900,10 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                     assets = job.get("assets") or {}
                     local_assets = {}
                     for kind, name in assets.items():
+                        if not isinstance(name, str) or name.startswith("["):
+                            continue
+                        if Path(name).name != name:
+                            continue
                         destination = job_work_dir / name
                         response = client.get(f"/api/worker/{job['id']}/asset/{name}")
                         response.raise_for_status()
@@ -873,6 +935,7 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                                 mixed_scene_assets.append((image, False))
                             else:
                                 mixed_scene_assets.append((fallback_images[index - 1], False))
+                    dialogue_track = _build_dialogue_track(job, local_assets, job_work_dir)
                     print(
                         f"Render inputs for {job['id']}: "
                         f"{ {kind: path.stat().st_size for kind, path in local_assets.items()} }",
@@ -882,7 +945,7 @@ def run(base_url: str, token: str, poll_seconds: int, output_dir: Path) -> None:
                         job,
                         job_work_dir,
                         image_path=local_assets.get("image"),
-                        audio_path=local_assets.get("voiceover"),
+                        audio_path=dialogue_track or local_assets.get("voiceover"),
                         bgm_path=local_assets.get("bgm"),
                         scene_assets=mixed_scene_assets,
                     )

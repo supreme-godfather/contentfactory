@@ -239,12 +239,14 @@ def ready() -> dict[str, str]:
 
 @app.get("/media/{filename}")
 def public_media(filename: str) -> FileResponse:
-    """Serve completed videos and generated platform covers.
+    """Serve completed videos, generated covers and job assets.
 
-    Only filenames explicitly attached to a completed job are accepted;
-    source assets and arbitrary paths are never exposed.
+    Only filenames explicitly attached to a job are accepted; source assets and
+    arbitrary paths are never exposed. Job assets (the character sheet, the
+    generated scene images) are served as well because a generation provider
+    has to be able to fetch a character reference by URL.
     """
-    if Path(filename).name != filename or not filename.endswith((".mp4", ".jpg")):
+    if Path(filename).name != filename or not filename.endswith((".mp4", ".jpg", ".png", ".mp3")):
         raise HTTPException(status_code=404, detail="Media not found")
     with SessionLocal() as session:
         if filename.endswith(".mp4"):
@@ -263,13 +265,37 @@ def public_media(filename: str) -> FileResponse:
                     covers = {}
                 if filename not in covers.values():
                     job = None
-        if job is None or job.status not in {"approved", "published"}:
+                elif getattr(job, "status", "") not in {"approved", "published"}:
+                    job = None
+            if job is None:
+                asset_job = session.scalar(
+                    select(ContentJob).where(
+                        ContentJob.metadata_json.contains(f'"{filename}"')
+                    )
+                )
+                if asset_job is not None:
+                    try:
+                        assets = json.loads(asset_job.metadata_json or "{}").get("assets", {})
+                    except json.JSONDecodeError:
+                        assets = {}
+                    if filename in assets.values():
+                        job = asset_job
+        if job is None:
+            raise HTTPException(status_code=404, detail="Media not found")
+        if filename.endswith(".mp4") and job.status not in {"approved", "published"}:
             raise HTTPException(status_code=404, detail="Media not found")
     path = (Path(get_settings().media_root).resolve() / filename).resolve()
     media_root = Path(get_settings().media_root).resolve()
     if path.parent != media_root or not path.is_file():
         raise HTTPException(status_code=404, detail="Media not found")
-    media_type = "video/mp4" if filename.endswith(".mp4") else "image/jpeg"
+    if filename.endswith(".mp4"):
+        media_type = "video/mp4"
+    elif filename.endswith(".png"):
+        media_type = "image/png"
+    elif filename.endswith(".mp3"):
+        media_type = "audio/mpeg"
+    else:
+        media_type = "image/jpeg"
     return FileResponse(path, media_type=media_type)
 
 @app.get("/api/status")
@@ -1663,6 +1689,8 @@ def preflight_endpoint(job_id: str, _: None = Depends(require_admin_api_token)) 
         "id": job.id,
         "status": job.status,
         "problems": sorted(set(problems)),
+        "script": job.script_text,
+        "dialogue_lines": metadata.get("dialogue_lines") or [],
         "hooks": {
             "options": hook_variants(metadata),
             "selected": str(metadata.get("selected_hook") or ""),

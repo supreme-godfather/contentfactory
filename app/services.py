@@ -440,6 +440,24 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
         )
         script = str(package.get("script") or "")
         package_metadata = package.get("metadata") or {}
+        dialogue_lines: list[dict[str, object]] = []
+        if pack.dialogue_mode:
+            from .dialogue import parse_dialogue
+
+            parsed = parse_dialogue(script)
+            dialogue_lines = [
+                {
+                    "speaker": line.speaker,
+                    "text": line.text,
+                    "character_id": line.character_id,
+                }
+                for line in parsed
+                if line.text
+            ]
+            if dialogue_lines:
+                from .dialogue import dialogue_text
+
+                script = dialogue_text(parsed)
         storyboard = build_storyboard(topic, script)
         scene_template = str(series_context.get("scene_template") or "")
         if scene_template:
@@ -491,6 +509,10 @@ def generate_content(job_id: str, facts: str = "") -> ContentJob:
             "genre": genre,
             "genre_reason": genre_reason,
         }
+        if dialogue_lines:
+            metadata["dialogue_lines"] = dialogue_lines
+            metadata["dialogue_mode"] = True
+            metadata["cast"] = list(pack.cast)
         metadata = _apply_ai_publishing_package(metadata, package_metadata, format_key)
         if series_context:
             metadata.update(
@@ -650,6 +672,9 @@ def _series_character_reference(
     pack = get_pack(series.pack_id)
     if not pack.needs_character_image:
         return None
+    from .characters import get_character
+
+    character = get_character(pack.default_character)
     media_root.mkdir(parents=True, exist_ok=True)
     if series.character_asset:
         existing = media_root / series.character_asset
@@ -660,7 +685,7 @@ def _series_character_reference(
 
         filename = f"{series_id}-character.jpg"
         destination = media_root / filename
-        generate_minimax_image(pack.character_prompt, destination)
+        generate_minimax_image(character.sheet(), destination)
     except Exception as exc:
         logger.warning("Character sheet generation failed: %s", exc)
         return None
@@ -737,6 +762,14 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
         from .packs import get_pack
 
         pack = get_pack(str(metadata.get("pack_id") or "") or None)
+        cast_text = str(metadata.get("series_character") or "")
+        if pack.cast:
+            from .characters import get_character
+
+            cast_text = " ".join(
+                get_character(character_id).look for character_id in pack.cast
+            )
+        dialogue_lines = metadata.get("dialogue_lines")
         assets = create_job_assets(
             job_id,
             topic,
@@ -746,8 +779,17 @@ def generate_assets(job_id: str, expected_version: int) -> ContentJob:
             thumbnail_prompt=str(metadata.get("thumbnail_prompt") or "") or None,
             custom_voiceover=custom_voiceover or None,
             character_reference=character_reference,
-            character_prompt=str(metadata.get("series_character") or "") or None,
+            character_prompt=cast_text or None,
             voice_profile=pack.voice_profile or None,
+            dialogue_lines=(
+                dialogue_lines if isinstance(dialogue_lines, list) and dialogue_lines else None
+            ),
+            character_sheets=(
+                {"lead": character_reference.name}
+                if character_reference is not None and character_reference.is_file()
+                else None
+            ),
+            video_scene_count=pack.video_scene_count,
         )
         from .audio_catalog import get_default_audio_asset
 
@@ -842,6 +884,8 @@ def approve_job(
 
 
 def retry_job(job_id: str) -> ContentJob:
+    """Retry a failed job, reusing the assets it already paid for."""
+    media_root = Path(get_settings().media_root)
     with SessionLocal() as session:
         job = session.get(ContentJob, job_id)
         if not job:
@@ -849,13 +893,26 @@ def retry_job(job_id: str) -> ContentJob:
         if job.status != "failed":
             raise ValueError("Only failed jobs can be retried")
         job.status = "queued"
-        if job.stage == "script":
+        try:
+            metadata = json.loads(job.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        assets = metadata.get("assets") or {}
+        filenames = [
+            name
+            for name in (assets.values() if isinstance(assets, dict) else [])
+            if isinstance(name, str) and not name.startswith("[")
+        ]
+        reusable = bool(filenames) and all(
+            Path(name).name == name and (media_root / name).is_file()
+            for name in filenames
+        )
+        if job.stage == "render" and reusable:
+            # The media was already paid for: go straight back to the renderer.
+            job.stage = "render"
+        elif job.stage == "script":
             job.stage = "topic"
         elif job.stage == "assets":
-            try:
-                metadata = json.loads(job.metadata_json or "{}")
-            except json.JSONDecodeError:
-                metadata = {}
             job.stage = (
                 "assets"
                 if metadata.get("script_approval_version") == job.content_version

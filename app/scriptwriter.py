@@ -36,6 +36,26 @@ WRITER_SYSTEM = (
     "no emoji, no channel introduction."
 )
 
+DIALOGUE_SYSTEM = (
+    "You write CINEMATIC DIALOGUE SCENES for vertical Hindi reels. "
+    "You always answer with tagged dialogue lines and nothing else: one line per "
+    "turn, each line prefixed with its speaker and a colon, like "
+    "'शेरू भाई: पचास करोड़? ठीक है।'. "
+    "Never write narration paragraphs, never write stage directions, never write "
+    "an intro, never write a subscribe line, never write a question for the "
+    "viewer and never use markdown. Keep every line under nine words."
+)
+
+DIALOGUE_RULES = """
+DIALOGUE RULES
+1. Write only tagged dialogue lines, one per turn, no blank commentary.
+2. The first line is the hook: it must work as an opening frame in one second.
+3. Alternate speakers. Two voices, four to eight turns, nothing more.
+4. Every line is under nine words and ends like a spoken line.
+5. Keep the exchange comic and cinematic: a challenge, a reply, an escalation.
+6. Never use a real person's name, never mention AI, never be cruel.
+""".strip()
+
 RETAIL_RULES = """
 NON-NEGOTIABLE RULES
 1. Start at 0.0 seconds. Never greet, never introduce the channel, never say
@@ -503,6 +523,7 @@ def _script_prompt(
     genre: dict[str, str] | None = None,
     pack_directive: str = "",
     series_context: dict | None = None,
+    dialogue_mode: bool = False,
 ) -> str:
     from .genres import genre_directives
     from .lessons import lessons_block
@@ -520,6 +541,18 @@ def _script_prompt(
         else ""
     )
     pack_block = f"\nFormat pack (follow it):\n{pack_directive}\n" if pack_directive else ""
+    if dialogue_mode:
+        return (
+            f"Topic: {topic}\n"
+            f"Channel niche: {niche_label}\n"
+            f"Format: {fmt}\n"
+            f"{facts}"
+            f"{pack_block}"
+            f"{_series_prompt_block(series_context)}"
+            f"{DIALOGUE_RULES}\n"
+            f"{direction}{extra}"
+            f"\nWrite the dialogue now."
+        )
     return (
         f"Topic: {topic}\n"
         f"Channel niche: {niche_label}\n"
@@ -591,6 +624,7 @@ def build_script(
     from .packs import get_pack, pack_directives
 
     pack = get_pack(pack_id)
+    system_prompt = DIALOGUE_SYSTEM if pack.dialogue_mode else WRITER_SYSTEM
     prompt = _script_prompt(
         topic,
         niche_label,
@@ -601,6 +635,7 @@ def build_script(
         genre,
         pack_directive=pack_directives(pack),
         series_context=series_context,
+        dialogue_mode=pack.dialogue_mode,
     )
     try:
         if provider == "gemini":
@@ -610,7 +645,7 @@ def build_script(
                 headers={"x-goog-api-key": api_key},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
-                    "systemInstruction": {"parts": [{"text": WRITER_SYSTEM}]},
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
                     "generationConfig": {"temperature": 0.7},
                 },
                 timeout=60,
@@ -634,7 +669,7 @@ def build_script(
                 json={
                     "model": "Qwen/Qwen2.5-7B-Instruct",
                     "messages": [
-                        {"role": "system", "content": WRITER_SYSTEM},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
                     ],
                     "temperature": 0.7,
@@ -647,6 +682,7 @@ def build_script(
         elif provider == "minimax":
             content = _minimax_chat(
                 api_key,
+                system_prompt,
                 prompt,
                 max_tokens=4800 if is_long else 2600,
                 temperature=0.78,
@@ -749,32 +785,37 @@ def build_script_package(
             from .packs import get_pack, pack_directives
 
             pack = get_pack(pack_id)
-            prompt = _script_prompt(
-                topic,
-                niche_label,
-                budget,
-                fmt,
-                facts,
-                custom_instruction,
-                genre,
-                pack_directive=pack_directives(pack),
-                series_context=series_context,
-            )
-            review = _minimax_chat(
-                api_key,
-                CRITIC_SYSTEM,
-                (
-                    f"{CRITIC_RULES}\n\nRequired closing line (exact):\n{CLOSING_LINES}\n\n"
-                    f"Topic: {topic}\nNiche: {niche_label}\nFormat: {fmt}\n\n"
-                    "CANDIDATE SCRIPT:\n"
-                    f"{script}"
-                ),
-                max_tokens=5000 if is_long else 2800,
-                temperature=0.35,
-            )
-            if review and len(review.strip()) >= min_chars:
-                package["script"] = review
-                package["critic"] = {"applied": True}
+            if pack.dialogue_mode:
+                # The retention editor rewrites prose; a tagged dialogue must
+                # keep its speaker tags, so the editor is skipped here.
+                package["critic"] = {"applied": False, "skipped": "dialogue_pack"}
+            else:
+                prompt = _script_prompt(
+                    topic,
+                    niche_label,
+                    budget,
+                    fmt,
+                    facts,
+                    custom_instruction,
+                    genre,
+                    pack_directive=pack_directives(pack),
+                    series_context=series_context,
+                )
+                review = _minimax_chat(
+                    api_key,
+                    CRITIC_SYSTEM,
+                    (
+                        f"{CRITIC_RULES}\n\nRequired closing line (exact):\n{CLOSING_LINES}\n\n"
+                        f"Topic: {topic}\nNiche: {niche_label}\nFormat: {fmt}\n\n"
+                        "CANDIDATE SCRIPT:\n"
+                        f"{script}"
+                    ),
+                    max_tokens=5000 if is_long else 2800,
+                    temperature=0.35,
+                )
+                if review and len(review.strip()) >= min_chars:
+                    package["script"] = review
+                    package["critic"] = {"applied": True}
         except Exception:
             logger.warning("Retention editor pass failed; keeping the valid draft", exc_info=True)
 
