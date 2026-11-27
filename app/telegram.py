@@ -5621,6 +5621,40 @@ async def handle_update(update: dict[str, Any]) -> None:
         if text in {"/start", "/menu"}:
             await send_message(chat_id, _build_start_message(), _keyboard())
 
+        elif text == "/manager" or text.startswith("/manager "):
+            from .manager import process_manager_message
+
+            manager_request = text[len("/manager"):].strip()
+            if not manager_request:
+                await send_message(
+                    chat_id,
+                    "🧭 <b>Factory Manager</b>\n"
+                    "Try <code>status</code>, <code>queue</code>, <code>workers</code>, "
+                    "<code>providers</code>, <code>retry &lt;job-id&gt;</code>, "
+                    "<code>approve &lt;job-id&gt;</code>, <code>publish &lt;job-id&gt;</code>, "
+                    "<code>pause</code>, <code>resume</code>, or "
+                    "<code>create a job about &lt;topic&gt;</code>.",
+                    _keyboard(),
+                )
+                return
+            reply = process_manager_message(
+                manager_request,
+                owner_id=str(user_id),
+                channel="telegram",
+            )
+            await send_message(chat_id, reply, _keyboard())
+
+        elif text.lower().startswith("manager ") or text.lower().startswith("manager:"):
+            from .manager import process_manager_message
+
+            manager_request = re.sub(r"^manager\s*:?\s*", "", text, flags=re.IGNORECASE)
+            reply = process_manager_message(
+                manager_request,
+                owner_id=str(user_id),
+                channel="telegram",
+            )
+            await send_message(chat_id, reply, _keyboard())
+
         elif text == "/help":
             await send_message(chat_id, _build_help_message(), _keyboard())
 

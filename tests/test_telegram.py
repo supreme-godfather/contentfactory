@@ -1579,6 +1579,26 @@ class TestHandleUpdate:
             assert "Queue" in text
 
     @pytest.mark.asyncio
+    async def test_manager_status_command(self):
+        from app.telegram import handle_update
+
+        with patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send:
+            await handle_update(_text_update("/manager status"))
+            mock_send.assert_called_once()
+            text = mock_send.call_args[0][1]
+            assert "Factory status" in text
+
+    @pytest.mark.asyncio
+    async def test_free_text_manager_risky_action_requires_confirmation(self):
+        from app.telegram import handle_update
+
+        with patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send:
+            await handle_update(_text_update("manager: pause"))
+            mock_send.assert_called_once()
+            text = mock_send.call_args[0][1]
+            assert "Confirmation required" in text
+
+    @pytest.mark.asyncio
     async def test_pause_command(self):
         from app.telegram import handle_update
         from app.services import is_paused, set_paused

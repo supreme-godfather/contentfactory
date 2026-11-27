@@ -173,6 +173,31 @@ class ProviderUsage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class ManagerAudit(Base):
+    __tablename__ = "manager_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_id: Mapped[str] = mapped_column(String(80), index=True)
+    channel: Mapped[str] = mapped_column(String(30), index=True)
+    request: Mapped[str] = mapped_column(Text)
+    decision: Mapped[str] = mapped_column(String(40), index=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class ManagerConfirmation(Base):
+    __tablename__ = "manager_confirmations"
+
+    token: Mapped[str] = mapped_column(String(12), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(80), index=True)
+    channel: Mapped[str] = mapped_column(String(30), index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    args_json: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    executed: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class PublicationRecord(Base):
     __tablename__ = "publication_records"
 

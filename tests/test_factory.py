@@ -42,6 +42,85 @@ def test_factory_starts_paused():
     assert get_settings().app_paused is True
 
 
+def test_manager_read_actions_and_audit(monkeypatch):
+    from app.db import ManagerAudit, SessionLocal
+    from app.manager import process_manager_message
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    status = process_manager_message("status", owner_id="12345", channel="telegram")
+    assert "Factory status" in status
+    assert "Paused:" in status
+
+    with SessionLocal() as session:
+        audit = session.query(ManagerAudit).filter_by(owner_id="12345").first()
+    assert audit is not None
+    assert audit.channel == "telegram"
+    assert audit.decision == "executed"
+
+
+def test_manager_risky_action_requires_persisted_confirmation(monkeypatch):
+    from app.db import ManagerConfirmation, SessionLocal
+    from app.manager import process_manager_message
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    response = process_manager_message("pause", owner_id="12345", channel="telegram")
+    assert "Confirmation required" in response
+    assert "/manager confirm " in response
+
+    token = response.rsplit(" ", 1)[1]
+    with SessionLocal() as session:
+        confirmation = session.get(ManagerConfirmation, token)
+    assert confirmation is not None
+    assert confirmation.owner_id == "12345"
+    assert confirmation.action == "pause"
+
+    wrong_owner = process_manager_message(
+        f"confirm {token}",
+        owner_id="99999",
+        channel="telegram",
+    )
+    assert "another manager session" in wrong_owner
+
+
+def test_manager_confirmation_executes_only_for_matching_owner(monkeypatch):
+    from app.db import ManagerConfirmation, SessionLocal
+    from app.manager import process_manager_message
+    from app.services import is_paused
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    request = process_manager_message("resume", owner_id="12345", channel="telegram")
+    token = request.rsplit(" ", 1)[1]
+    result = process_manager_message(
+        f"confirm {token}",
+        owner_id="12345",
+        channel="telegram",
+    )
+
+    assert "Factory resumed" in result
+    assert is_paused() is False
+    with SessionLocal() as session:
+        confirmation = session.get(ManagerConfirmation, token)
+    assert confirmation.executed == 1
+
+
+def test_manager_http_endpoints_require_admin_token():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post("/api/manager/chat", json={"message": "status"})
+    assert response.status_code == 401
+
+
 def test_only_railway_render_worker_can_claim_jobs():
     from app.db import ContentJob, SessionLocal, init_db
     from app.hq import set_render_worker_target

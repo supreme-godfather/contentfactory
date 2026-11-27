@@ -82,6 +82,16 @@ class GenerateRequest(BaseModel):
     brand: str = Field(default="learn_with_elite_explainer", max_length=80)
 
 
+class ManagerChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    owner_id: str = Field(default="api", min_length=1, max_length=80)
+
+
+class ManagerConfirmRequest(BaseModel):
+    token: str = Field(min_length=6, max_length=12, pattern="^[A-Za-z0-9]+$")
+    owner_id: str = Field(default="api", min_length=1, max_length=80)
+
+
 class VersionRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
@@ -362,6 +372,36 @@ def status(_: None = Depends(require_admin_api_token)) -> dict[str, object]:
         },
         "provider_status": provider_status(),
     }
+
+
+@app.post("/api/manager/chat")
+def manager_chat(
+    request: ManagerChatRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, str]:
+    from .manager import process_manager_message
+
+    reply = process_manager_message(
+        request.message,
+        owner_id=request.owner_id,
+        channel="http",
+    )
+    return {"reply": reply}
+
+
+@app.post("/api/manager/confirm")
+def manager_confirm(
+    request: ManagerConfirmRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, str]:
+    from .manager import confirm_pending
+
+    reply = confirm_pending(
+        request.owner_id,
+        "http",
+        request.token,
+    )
+    return {"reply": reply}
 
 
 class PaidProviderToggleRequest(BaseModel):
@@ -1648,6 +1688,115 @@ def requeue_stuck_endpoint(
     from .maintenance import requeue_stuck_asset_jobs
 
     return requeue_stuck_asset_jobs(minutes)
+
+
+class McpSessionRequest(BaseModel):
+    action: str = Field(pattern="^(status|authorize|poll|disconnect)$")
+    client_id: str | None = Field(default=None, max_length=120)
+    device_code: str | None = Field(default=None, max_length=400)
+    interval: int = Field(default=5, ge=1, le=30)
+
+
+def _mcp_session_path() -> Path:
+    return Path(get_settings().media_root).resolve() / "higgsfield-mcp-session.json"
+
+
+@app.post("/api/admin/higgsfield/mcp")
+def higgsfield_mcp_endpoint(
+    request: McpSessionRequest,
+    _: None = Depends(require_admin_api_token),
+) -> dict[str, object]:
+    """Connect the factory to the Higgsfield MCP server (plan credits).
+
+    ``authorize`` starts the device flow and returns the code and the URL to
+    confirm it in a browser. ``poll`` waits for the owner to confirm and stores
+    the access and refresh tokens.
+    """
+    from .higgsfield_mcp import (
+        HiggsfieldMcpClient,
+        McpError,
+        load_session,
+        save_session,
+    )
+
+    path = _mcp_session_path()
+    session = load_session(path)
+    client = HiggsfieldMcpClient(session.get("access_token"))
+
+    if request.action == "status":
+        authorized = bool(session.get("access_token"))
+        tools: list[str] = []
+        if authorized:
+            try:
+                client.initialize()
+                tools = [tool.name for tool in client.list_tools()]
+            except McpError as exc:
+                return {"authorized": True, "tools": [], "error": str(exc)}
+        return {
+            "authorized": authorized,
+            "client_id": session.get("client_id"),
+            "tools": tools,
+        }
+
+    if request.action == "authorize":
+        client_id = request.client_id or session.get("client_id")
+        if not client_id:
+            registration = client.register_client()
+            client_id = str(registration.get("client_id") or "")
+            session["client_id"] = client_id
+            save_session(path, session)
+        try:
+            device = client.start_device_flow(client_id)
+        except McpError as exc:
+            return {"ok": False, "error": str(exc)}
+        session["device_code"] = device.get("device_code")
+        session["interval"] = int(device.get("interval") or 5)
+        session["expires_in"] = int(device.get("expires_in") or 600)
+        save_session(path, session)
+        return {
+            "ok": True,
+            "client_id": client_id,
+            "device_code": device.get("device_code"),
+            "user_code": device.get("user_code"),
+            "verification_uri": device.get("verification_uri")
+            or device.get("verification_uri_complete"),
+            "interval": session["interval"],
+            "expires_in": session["expires_in"],
+        }
+
+    if request.action == "poll":
+        client_id = request.client_id or session.get("client_id")
+        device_code = request.device_code or session.get("device_code")
+        if not client_id or not device_code:
+            return {"ok": False, "error": "Start the authorisation first."}
+        try:
+            token = client.wait_for_device_token(
+                client_id,
+                device_code,
+                interval=int(session.get("interval") or 5),
+            )
+        except McpError as exc:
+            return {"ok": False, "error": str(exc)}
+        session["access_token"] = token.get("access_token")
+        session["refresh_token"] = token.get("refresh_token")
+        session.pop("device_code", None)
+        save_session(path, session)
+        client = HiggsfieldMcpClient(session.get("access_token"))
+        try:
+            client.initialize()
+            tools = [tool.name for tool in client.list_tools()]
+        except McpError as exc:
+            tools = []
+            session["error"] = str(exc)
+        return {"ok": True, "tools": tools, "error": session.get("error")}
+
+    if request.action == "disconnect":
+        session.pop("access_token", None)
+        session.pop("refresh_token", None)
+        save_session(path, session)
+        return {"ok": True, "authorized": False}
+
+    return {"ok": False, "error": "Unsupported action."}
 
 
 @app.post("/api/admin/higgsfield/probe")

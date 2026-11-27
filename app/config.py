@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     mock_publishing: bool = True
     media_qc_required: bool = True
     publish_preflight_enabled: bool = True
+    manager_enabled: bool = True
+    manager_confirm_minutes: int = Field(default=10, ge=1, le=60)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
