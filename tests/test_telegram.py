@@ -1582,17 +1582,26 @@ class TestHandleUpdate:
     async def test_manager_status_command(self):
         from app.telegram import handle_update
 
-        with patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send:
+        with (
+            patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send,
+            patch("app.manager.process_manager_message", return_value="Factory status healthy"),
+        ):
             await handle_update(_text_update("/manager status"))
             mock_send.assert_called_once()
             text = mock_send.call_args[0][1]
-            assert "Factory status" in text
+            assert "Factory status healthy" in text
 
     @pytest.mark.asyncio
     async def test_free_text_manager_risky_action_requires_confirmation(self):
         from app.telegram import handle_update
 
-        with patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send:
+        with (
+            patch("app.telegram.send_message", new_callable=AsyncMock) as mock_send,
+            patch(
+                "app.manager.process_manager_message",
+                return_value="Confirmation required: pause the factory.\nReply with: /manager confirm ABCDEF012345",
+            ),
+        ):
             await handle_update(_text_update("manager: pause"))
             mock_send.assert_called_once()
             text = mock_send.call_args[0][1]

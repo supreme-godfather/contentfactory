@@ -45,20 +45,27 @@ def test_factory_starts_paused():
 def test_manager_read_actions_and_audit(monkeypatch):
     from app.db import ManagerAudit, SessionLocal
     from app.manager import process_manager_message
+    from app.manager_brain import TOOLS
 
     monkeypatch.setenv("MANAGER_ENABLED", "true")
     from app.config import get_settings
     get_settings.cache_clear()
+    _mock_manager_model(
+        monkeypatch,
+        [
+            _tool_response("get_factory_status", "{}"),
+            _text_response("Factory is healthy and paused."),
+        ],
+    )
 
     status = process_manager_message("status", owner_id="12345", channel="telegram")
-    assert "Factory status" in status
-    assert "Paused:" in status
+    assert "healthy and paused" in status
 
     with SessionLocal() as session:
-        audit = session.query(ManagerAudit).filter_by(owner_id="12345").first()
-    assert audit is not None
-    assert audit.channel == "telegram"
-    assert audit.decision == "executed"
+        audits = session.query(ManagerAudit).filter_by(owner_id="12345").all()
+    assert any(audit.channel == "telegram" and audit.decision == "received" for audit in audits)
+    assert any(audit.decision == "executed" and "get_factory_status" in audit.request for audit in audits)
+    assert any(item["function"]["name"] == "publish_job" for item in TOOLS)
 
 
 def test_manager_risky_action_requires_persisted_confirmation(monkeypatch):
@@ -68,6 +75,13 @@ def test_manager_risky_action_requires_persisted_confirmation(monkeypatch):
     monkeypatch.setenv("MANAGER_ENABLED", "true")
     from app.config import get_settings
     get_settings.cache_clear()
+    _mock_manager_model(
+        monkeypatch,
+        [
+            _tool_response("set_factory_paused", '{"paused": true}'),
+            _text_response("I need your confirmation to pause the factory."),
+        ],
+    )
 
     response = process_manager_message("pause", owner_id="12345", channel="telegram")
     assert "Confirmation required" in response
@@ -96,6 +110,13 @@ def test_manager_confirmation_executes_only_for_matching_owner(monkeypatch):
     monkeypatch.setenv("MANAGER_ENABLED", "true")
     from app.config import get_settings
     get_settings.cache_clear()
+    _mock_manager_model(
+        monkeypatch,
+        [
+            _tool_response("set_factory_paused", '{"paused": false}'),
+            _text_response("I need your confirmation to resume the factory."),
+        ],
+    )
 
     request = process_manager_message("resume", owner_id="12345", channel="telegram")
     token = request.rsplit(" ", 1)[1]
@@ -107,9 +128,228 @@ def test_manager_confirmation_executes_only_for_matching_owner(monkeypatch):
 
     assert "Factory resumed" in result
     assert is_paused() is False
+    replay = process_manager_message(
+        f"confirm {token}",
+        owner_id="12345",
+        channel="telegram",
+    )
+    assert "already-used" in replay
     with SessionLocal() as session:
         confirmation = session.get(ManagerConfirmation, token)
     assert confirmation.executed == 1
+
+
+def _tool_response(name: str, arguments: str) -> dict:
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "Checking that now.",
+                    "reasoning_content": "Private reasoning stays inside the model conversation.",
+                    "tool_calls": [
+                        {
+                            "id": "call_test_1",
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+
+def _multi_tool_response(calls: list[tuple[str, str]]) -> dict:
+    response = _tool_response(calls[0][0], calls[0][1])
+    response["choices"][0]["message"]["tool_calls"] = [
+        {
+            "id": f"call_test_{index}",
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        }
+        for index, (name, arguments) in enumerate(calls, start=1)
+    ]
+    return response
+
+
+def _text_response(text: str) -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": text}}]}
+
+
+def _mock_manager_model(monkeypatch, responses: list[dict]) -> list[dict]:
+    import app.manager_brain as manager_brain
+
+    pending = list(responses)
+    calls: list[dict] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, body: dict):
+            self.body = body
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.body
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            calls.append({"url": url, **kwargs})
+            return FakeResponse(pending.pop(0))
+
+    monkeypatch.setattr(manager_brain, "_manager_api_key", lambda: "test-manager-key")
+    monkeypatch.setattr(manager_brain.httpx, "Client", FakeClient)
+    return calls
+
+
+def test_manager_brain_preserves_tool_context_and_conversation(monkeypatch):
+    from app.db import ManagerMessage, SessionLocal
+    from app.manager import process_manager_message
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    calls = _mock_manager_model(
+        monkeypatch,
+        [
+            _tool_response("get_factory_controls", "{}"),
+            _text_response("Automation is currently disabled."),
+            _text_response("Yes, it is still disabled."),
+        ],
+    )
+
+    first = process_manager_message(
+        "Is automation enabled?",
+        owner_id="banti-owner",
+        channel="telegram",
+    )
+    second = process_manager_message(
+        "and is it still that way?",
+        owner_id="banti-owner",
+        channel="telegram",
+    )
+
+    assert "disabled" in first
+    assert "still disabled" in second
+    assert calls[0]["json"]["model"] == "MiniMax-M3.1-Flash"
+    assert calls[0]["json"]["reasoning_effort"] == "medium"
+    tool_round_messages = calls[1]["json"]["messages"]
+    assert any(item.get("role") == "assistant" and item.get("reasoning_content") for item in tool_round_messages)
+    assert any(item.get("role") == "tool" for item in calls[1]["json"]["messages"])
+    with SessionLocal() as session:
+        history = session.query(ManagerMessage).filter_by(owner_id="banti-owner").all()
+    assert [item.role for item in history] == ["user", "assistant", "user", "assistant"]
+
+
+def test_manager_creating_a_job_waits_for_owner_confirmation(monkeypatch):
+    from app.db import ContentJob, ManagerConfirmation, SessionLocal
+    from app.manager import process_manager_message
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    _mock_manager_model(
+        monkeypatch,
+        [
+            _tool_response(
+                "create_job",
+                '{"topic": "Why oceans glow at night", "platform": "instagram"}',
+            ),
+            _text_response("I have prepared the job request."),
+        ],
+    )
+
+    response = process_manager_message(
+        "Make an Instagram reel about glowing oceans.",
+        owner_id="12345",
+    )
+
+    assert "Confirmation required: create a job for Why oceans glow at night" in response
+    with SessionLocal() as session:
+        assert session.query(ContentJob).count() == 0
+        confirmation = session.query(ManagerConfirmation).first()
+    assert confirmation.action == "create"
+    assert "Why oceans glow at night" in confirmation.args_json
+
+
+def test_manager_allows_only_one_mutating_action_per_message(monkeypatch):
+    from app.db import ManagerConfirmation, SessionLocal
+    from app.manager import process_manager_message
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    _mock_manager_model(
+        monkeypatch,
+        [
+            _multi_tool_response(
+                [
+                    ("set_factory_paused", '{"paused": true}'),
+                    ("set_automation_enabled", '{"enabled": true}'),
+                ]
+            ),
+            _text_response("I can only make one change at a time."),
+        ],
+    )
+
+    response = process_manager_message(
+        "Pause the factory and enable automation.",
+        owner_id="12345",
+    )
+
+    assert "only make one change" in response
+    assert "Confirmation required: pause the factory" in response
+    with SessionLocal() as session:
+        assert session.query(ManagerConfirmation).count() == 1
+
+
+def test_manager_never_sends_or_persists_pasted_api_key(monkeypatch):
+    from app.db import ManagerAudit, ManagerMessage, SessionLocal
+    from app.manager import process_manager_message
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    response = process_manager_message(
+        "Set API key: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+        owner_id="12345",
+        channel="telegram",
+    )
+
+    assert "does not accept API keys" in response
+    with SessionLocal() as session:
+        assert session.query(ManagerMessage).filter_by(owner_id="12345").count() == 0
+        audit = session.query(ManagerAudit).filter_by(owner_id="12345").first()
+        assert "abcdefghijklmnopqrstuvwxyz" not in audit.request
+
+
+def test_manager_without_minimax_key_explains_configuration(monkeypatch):
+    from app.manager import process_manager_message
+    import app.manager_brain as manager_brain
+
+    monkeypatch.setenv("MANAGER_ENABLED", "true")
+    monkeypatch.setenv("MANAGER_MINIMAX_API_KEY", "")
+    monkeypatch.setenv("MINIMAX_API_KEY", "")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setattr(manager_brain, "_manager_api_key", lambda: "")
+
+    response = process_manager_message("How is the factory doing?", owner_id="12345")
+
+    assert "MiniMax brain is not configured" in response
 
 
 def test_manager_http_endpoints_require_admin_token():

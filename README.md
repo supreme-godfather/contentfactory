@@ -407,6 +407,29 @@ database, applied immediately, no redeploy:
   offline. This selects the compute worker, not an AI video-generation API; no
   external video-generation API is connected.
 
+## BANTI conversational factory manager
+
+The owner-only `/manager` Telegram interface is powered by MiniMax-M3.1-Flash
+tool calling. BANTI can interpret ordinary requests, inspect jobs, workers,
+provider roles, controls, trends, analytics, spend, and clipping results, and
+operate the corresponding factory controls. Conversation context is stored
+per owner and channel, with only a short rolling message history; model
+reasoning is not shown to users or stored as chat history.
+
+Configure `MANAGER_MINIMAX_API_KEY` with a MiniMax text-model API key and, if
+needed, set `MANAGER_MINIMAX_MODEL` and `MANAGER_MINIMAX_BASE_URL`. If the
+dedicated key is empty, BANTI checks the encrypted MiniMax M Plan text key,
+then the encrypted MiniMax video key, then `MINIMAX_API_KEY`. Keys are never
+sent as tool output. Never paste credentials into manager chat; use the
+provider credential setup instead.
+
+Every mutating, paid, publishing, approval, automation, and provider-setting
+action produces a persisted, expiring confirmation tied to its owner and
+channel. Only one factory change can be requested per manager message.
+Publishing still uses the normal approval and preflight checks. BANTI cannot
+run arbitrary shell commands or change secrets through its LLM tools; provider
+credentials remain in the secure setup flow.
+
 ## Format packs and story series (2026-11-22)
 
 The engine can now produce a **format pack** — a complete, versioned definition

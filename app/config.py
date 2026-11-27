@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     publish_preflight_enabled: bool = True
     manager_enabled: bool = True
     manager_confirm_minutes: int = Field(default=10, ge=1, le=60)
+    manager_minimax_api_key: str = ""
+    manager_minimax_base_url: str = "https://api.minimax.io/v1"
+    manager_minimax_model: str = "MiniMax-M3.1-Flash"
+    manager_minimax_timeout_seconds: int = Field(default=45, ge=5, le=120)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

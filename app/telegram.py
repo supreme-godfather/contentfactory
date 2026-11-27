@@ -5637,7 +5637,8 @@ async def handle_update(update: dict[str, Any]) -> None:
                     _keyboard(),
                 )
                 return
-            reply = process_manager_message(
+            reply = await asyncio.to_thread(
+                process_manager_message,
                 manager_request,
                 owner_id=str(user_id),
                 channel="telegram",
@@ -5648,7 +5649,8 @@ async def handle_update(update: dict[str, Any]) -> None:
             from .manager import process_manager_message
 
             manager_request = re.sub(r"^manager\s*:?\s*", "", text, flags=re.IGNORECASE)
-            reply = process_manager_message(
+            reply = await asyncio.to_thread(
+                process_manager_message,
                 manager_request,
                 owner_id=str(user_id),
                 channel="telegram",
